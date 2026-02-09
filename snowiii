@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>For You ❤️</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&family=Inter:wght@300;400&display=swap" rel="stylesheet">
+
+<style>
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: 'Inter', sans-serif;
+}
+
+/* FULL PAGE BACKGROUND */
+body {
+  background-image: 
+    linear-gradient(rgba(0,0,0,0.35), rgba(0,0,0,0.55)),
+    url("https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=2400&q=80");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: white;
+}
+
+/* LOVE CARD */
+.card {
+  background: rgba(255,255,255,0.12);
+  backdrop-filter: blur(12px);
+  padding: 40px 32px;
+  border-radius: 18px;
+  max-width: 420px;
+  width: 90%;
+  text-align: center;
+  box-shadow: 0 30px 60px rgba(0,0,0,0.4);
+  animation: fadeIn 2s ease forwards;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+h1 {
+  font-family: 'Playfair Display', serif;
+  font-size: 28px;
+  margin-bottom: 12px;
+}
+
+p {
+  font-size: 15px;
+  opacity: 0.9;
+  margin-bottom: 28px;
+}
+
+h2 {
+  font-size: 18px;
+  margin-bottom: 24px;
+}
+
+/* BUTTONS */
+.buttons {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+}
+
+button {
+  border: none;
+  padding: 12px 28px;
+  font-size: 14px;
+  border-radius: 30px;
+  cursor: pointer;
+  transition: 0.3s ease;
+}
+
+#yes {
+  background: #ff4d6d;
+  color: white;
+}
+
+#yes:hover {
+  transform: scale(1.1);
+}
+
+#no {
+  background: rgba(255,255,255,0.3);
+  color: white;
+  position: relative;
+}
+
+/* SNOW */
+.snow {
+  position: fixed;
+  top: -10px;
+  color: white;
+  opacity: 0.8;
+  animation: fall linear infinite;
+}
+
+@keyframes fall {
+  to {
+    transform: translateY(110vh);
+  }
+}
+</style>
+</head>
+
+<body>
+
+<div class="card" id="card">
+  <h1>Aey Chinnu ❤️</h1>
+  <p>I have something very real to tell you…</p>
+
+  <h2>Will you be my Valentine?</h2>
+
+  <div class="buttons">
+    <button id="yes">Yes 💖</button>
+    <button id="no">Illa 🙈</button>
+  </div>
+
+  <p style="margin-top:22px;font-size:12px;opacity:.7">
+    Made with all my heart
+  </p>
+</div>
+
+<script>
+const noBtn = document.getElementById("no");
+const yesBtn = document.getElementById("yes");
+const card = document.getElementById("card");
+
+/* NO button runs away */
+noBtn.addEventListener("mouseover", () => {
+  const x = Math.random() * 160 - 80;
+  const y = Math.random() * 120 - 60;
+  noBtn.style.transform = `translate(${x}px, ${y}px)`;
+});
+
+/* YES message */
+yesBtn.addEventListener("click", () => {
+  card.innerHTML = `
+    <h1>You mean the world to me ❤️</h1>
+    <p>This isn’t just a question…</p>
+    <h2>It’s how I feel about you</h2>
+    <p>Happy Valentine’s Day 🌹</p>
+    <p>I love you</p>
+  `;
+});
+
+/* Snow generator */
+function snow() {
+  const s = document.createElement("div");
+  s.className = "snow";
+  s.innerHTML = "❄";
+  s.style.left = Math.random() * window.innerWidth + "px";
+  s.style.fontSize = Math.random() * 8 + 8 + "px";
+  s.style.animationDuration = Math.random() * 6 + 6 + "s";
+  document.body.appendChild(s);
+  setTimeout(() => s.remove(), 12000);
+}
+
+setInterval(snow, 150);
+</script>
+
+</body>
+</html>
