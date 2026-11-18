@@ -268,7 +268,7 @@ object AiAgent {
      * points, decisions, tasks, questions and key moments; those lists are merged (never re-summarised away),
      * then one final pass writes the title, a thorough summary, tags and who the voices are.
      */
-    private fun buildNotes(key: String, transcript: String, rec: Recording, names: String): Notes {
+    private fun buildNotes(key: String, transcript: String, rec: Recording, knownNames: String): Notes {
         val parts = TranscriptTools.chunkText(transcript, 7000)
         val kp = ArrayList<String>(); val dec = ArrayList<String>(); val act = ArrayList<String>()
         val qs = ArrayList<String>(); val hl = ArrayList<String>(); val names = ArrayList<String>()
@@ -281,7 +281,7 @@ object AiAgent {
                     "Never add facts, people, tasks or topics that are not in the transcript. Reply ONLY with JSON: {\"key_points\":[strings], \"decisions\":[strings], " +
                     "\"action_items\":[{\"task\":string,\"owner\":string,\"due\":string}], \"questions\":[open questions], " +
                     "\"highlights\":[{\"t\":\"mm:ss\",\"text\":string}] (the most important moments), \"names\":[people, places, orgs]}",
-                "Names heard in other recordings (use ONLY to spell a name correctly if it is actually spoken below; never copy anything else from them): " + names.ifBlank { "(none)" } + "\n\nTranscript part:\n" + part, true
+                "Names heard in other recordings (use ONLY to spell a name correctly if it is actually spoken below; never copy anything else from them): " + knownNames.ifBlank { "(none)" } + "\n\nTranscript part:\n" + part, true
             )
             val j = runCatching { parseObj(out) }.getOrNull() ?: continue
             kp += strings(j.optJSONArray("key_points")); dec += strings(j.optJSONArray("decisions"))
@@ -311,7 +311,7 @@ object AiAgent {
                 "Use ONLY this recording: never bring in details, people or topics from any other recording, and never invent facts. If the recording is very short or says little, say so briefly instead of padding. Reply ONLY with JSON: " +
                 "{\"title\":string (max 7 words), \"summary\":string (as many short paragraphs as needed, one per topic), " +
                 "\"tags\":[up to 5 lowercase words], \"speakers\":{\"Voice 1\":name-or-role}}",
-            "Names heard in other recordings (spelling aid only, never copy anything else): " + names.ifBlank { "(none)" } + "\n\nNotes gathered from the whole recording:\n" + condensed +
+            "Names heard in other recordings (spelling aid only, never copy anything else): " + knownNames.ifBlank { "(none)" } + "\n\nNotes gathered from the whole recording:\n" + condensed +
                 "\n\nOpening of the transcript:\n" + transcript.take(2500), true
         )
         val f = runCatching { parseObj(out) }.getOrNull() ?: JSONObject()
