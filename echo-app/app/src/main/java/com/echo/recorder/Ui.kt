@@ -15,7 +15,10 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -32,6 +35,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -134,6 +141,11 @@ fun HomeScreen() {
         perms.launch(need.toTypedArray())
     }
 
+    Box(Modifier.fillMaxSize().background(
+        Brush.radialGradient(
+            listOf(RecRed.copy(alpha = if (active) 0.22f else 0.10f), Color.Transparent),
+            center = Offset(540f, 1050f), radius = 900f)
+    )) {
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(Modifier.height(16.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -145,7 +157,7 @@ fun HomeScreen() {
         Spacer(Modifier.weight(1f))
         Text(
             RecorderService.fmt(ui.elapsedMs),
-            fontSize = 64.sp, fontWeight = FontWeight.Light,
+            fontSize = 64.sp, fontWeight = FontWeight.Light, fontFamily = FontFamily.Monospace, letterSpacing = 2.sp,
             color = if (ui.status == RecorderState.Status.Paused) TextDim else Color.White,
         )
         Text(
@@ -187,6 +199,7 @@ fun HomeScreen() {
         }
         Spacer(Modifier.height(16.dp))
     }
+    }
 }
 
 @Composable
@@ -199,27 +212,31 @@ fun AiPill() {
     ) {
         Box(Modifier.size(8.dp).alpha(a).clip(CircleShape).background(Violet))
         Spacer(Modifier.width(8.dp))
-        Text("AI always on", fontSize = 12.sp, color = Color.White)
+        Text("AI always on", fontSize = 13.sp, color = Color.White)
     }
 }
 
 @Composable
 fun RecordButton(pulsing: Boolean, active: Boolean, onClick: () -> Unit) {
     val t = rememberInfiniteTransition(label = "pulse")
-    val ring by t.animateFloat(1f, 1.45f, infiniteRepeatable(tween(1300), RepeatMode.Restart), label = "ring")
-    val ringAlpha by t.animateFloat(0.45f, 0f, infiniteRepeatable(tween(1300), RepeatMode.Restart), label = "ra")
-    Box(Modifier.size(150.dp), contentAlignment = Alignment.Center) {
-        if (pulsing) {
-            Box(Modifier.size(110.dp).scale(ring).alpha(ringAlpha).clip(CircleShape).background(RecRed))
-        }
+    val ring by t.animateFloat(1f, 1.5f, infiniteRepeatable(tween(1400), RepeatMode.Restart), label = "ring")
+    val ringAlpha by t.animateFloat(0.4f, 0f, infiniteRepeatable(tween(1400), RepeatMode.Restart), label = "ra")
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val press by animateFloatAsState(if (pressed) 0.92f else 1f, spring(dampingRatio = 0.5f, stiffness = 500f), label = "press")
+    Box(Modifier.size(170.dp), contentAlignment = Alignment.Center) {
+        if (pulsing) Box(Modifier.size(120.dp).scale(ring).alpha(ringAlpha).clip(CircleShape).background(RecRed))
+        Box(Modifier.size(146.dp).border(1.5.dp, RecRed.copy(alpha = 0.35f), CircleShape))
         Box(
-            Modifier.size(112.dp).clip(CircleShape)
-                .background(Brush.linearGradient(listOf(RecRedSoft, RecRed, Color(0xFFD10A26))))
-                .clickable { onClick() },
+            Modifier.size(116.dp).scale(press)
+                .shadow(28.dp, CircleShape, ambientColor = RecRed, spotColor = RecRed)
+                .clip(CircleShape)
+                .background(Brush.linearGradient(listOf(RecRedSoft, RecRed, Color(0xFFC20822))))
+                .clickable(interactionSource = src, indication = null) { onClick() },
             contentAlignment = Alignment.Center,
         ) {
-            if (active) Box(Modifier.size(38.dp).clip(RoundedCornerShape(8.dp)).background(Color.White))
-            else Icon(Icons.Default.Mic, "Record", tint = Color.White, modifier = Modifier.size(48.dp))
+            if (active) Box(Modifier.size(38.dp).clip(RoundedCornerShape(9.dp)).background(Color.White))
+            else Icon(Icons.Default.Mic, "Record", tint = Color.White, modifier = Modifier.size(50.dp))
         }
     }
 }
@@ -253,11 +270,11 @@ fun Waveform(levels: List<Float>, active: Boolean, modifier: Modifier) {
 @Composable
 fun InsightCard(i: Insight) {
     Column(
-        Modifier.width(250.dp).clip(RoundedCornerShape(18.dp)).background(Surface1).padding(14.dp),
+        Modifier.width(260.dp).clip(RoundedCornerShape(20.dp)).background(Surface1).border(1.dp, Hairline, RoundedCornerShape(20.dp)).padding(16.dp),
     ) {
         Text("${i.emoji}  ${i.title}", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         Spacer(Modifier.height(4.dp))
-        Text(i.body, color = TextDim, fontSize = 12.sp, maxLines = 3)
+        Text(i.body, color = TextDim, fontSize = 13.sp, maxLines = 3)
     }
 }
 
@@ -314,8 +331,8 @@ fun RecordingCard(r: Recording) {
         )
     }
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Surface1)
-            .clickable { open = !open }.padding(16.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Surface1)
+            .border(1.dp, Hairline, RoundedCornerShape(22.dp)).clickable { open = !open }.padding(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -332,7 +349,7 @@ fun RecordingCard(r: Recording) {
                 Text(
                     RecorderService.fmt(r.durationMs) + " · " +
                         SimpleDateFormat("d MMM, h:mm a", Locale.getDefault()).format(Date(r.createdAt)),
-                    color = TextDim, fontSize = 12.sp,
+                    color = TextDim, fontSize = 13.sp,
                 )
             }
             AiStatusIcon(r.aiStatus)
@@ -341,24 +358,24 @@ fun RecordingCard(r: Recording) {
             Spacer(Modifier.height(10.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(r.tags) { t ->
-                    Text("#$t", fontSize = 11.sp, color = Violet,
+                    Text("#$t", fontSize = 12.sp, color = Violet,
                         modifier = Modifier.clip(RoundedCornerShape(50)).background(Surface2).padding(horizontal = 10.dp, vertical = 4.dp))
                 }
             }
         }
         AnimatedVisibility(open) {
             Column(Modifier.padding(top = 12.dp)) {
-                r.summary?.let { Text("Summary", color = TextDim, fontSize = 12.sp); Text(it); Spacer(Modifier.height(8.dp)) }
+                r.summary?.let { Text("Summary", color = TextDim, fontSize = 13.sp); Text(it); Spacer(Modifier.height(8.dp)) }
                 if (r.actionItems.isNotEmpty()) {
-                    Text("Action items", color = TextDim, fontSize = 12.sp)
+                    Text("Action items", color = TextDim, fontSize = 13.sp)
                     r.actionItems.forEach { Text("• $it") }
                     Spacer(Modifier.height(8.dp))
                 }
-                if (r.people.isNotEmpty()) { Text("People", color = TextDim, fontSize = 12.sp); r.people.forEach { Text("🗣 $it") }; Spacer(Modifier.height(8.dp)) }
-                r.transcript?.let { Text("Transcript", color = TextDim, fontSize = 12.sp); Text(it, fontSize = 13.sp); Spacer(Modifier.height(8.dp)) }
+                if (r.people.isNotEmpty()) { Text("People", color = TextDim, fontSize = 13.sp); r.people.forEach { Text("🗣 $it") }; Spacer(Modifier.height(8.dp)) }
+                r.transcript?.let { Text("Transcript", color = TextDim, fontSize = 13.sp); Text(it, fontSize = 13.sp); Spacer(Modifier.height(8.dp)) }
                 if (r.bookmarks.isNotEmpty())
-                    Text("Bookmarks: " + r.bookmarks.joinToString { RecorderService.fmt(it) }, color = TextDim, fontSize = 12.sp)
-                if (r.aiStatus.startsWith("error")) Text(r.aiStatus, color = RecRedSoft, fontSize = 12.sp)
+                    Text("Bookmarks: " + r.bookmarks.joinToString { RecorderService.fmt(it) }, color = TextDim, fontSize = 13.sp)
+                if (r.aiStatus.startsWith("error")) Text(r.aiStatus, color = RecRedSoft, fontSize = 13.sp)
                 if (r.aiStatus == "local" || r.aiStatus.startsWith("error")) {
                     TextButton(onClick = { EchoApp.appScope.launchAi(ctx.applicationContext, r.id) }) { Text("Run AI again") }
                 }
@@ -397,19 +414,10 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
         item { Spacer(Modifier.height(16.dp)); Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.Bold) }
         item {
             Text("AI brain", fontWeight = FontWeight.SemiBold)
-            Text("Zero cost: one free Groq key (no card) powers transcripts, summaries, action items and Ask. Get it at console.groq.com. If you hit the free limit Echo waits and retries; it never switches to a paid plan. The key stays on this device; recording audio is uploaded to Groq only for transcription.", color = TextDim, fontSize = 12.sp)
+            Text("Zero cost: one free Groq key (no card) powers transcripts, summaries, action items and Ask. Get it at console.groq.com. If you hit the free limit Echo waits and retries; it never switches to a paid plan. The key stays on this device; recording audio is uploaded to Groq only for transcription.", color = TextDim, fontSize = 13.sp)
         }
         item {
             OutlinedTextField(groq, { groq = it; s.groqKey = it }, label = { Text("Groq API key") },
-                singleLine = true, visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
-        }
-        item {
-            var dg by remember { mutableStateOf(s.deepgramKey) }
-            Text("Who said what", fontWeight = FontWeight.SemiBold)
-            Text("Optional. Without it Echo still infers speakers from the text for free. Deepgram gives sharper splits, but its free credit is one-time.", color = TextDim, fontSize = 12.sp)
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(dg, { dg = it; s.deepgramKey = it }, label = { Text("Deepgram API key") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
         }
@@ -434,7 +442,7 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
             }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Violet)) {
                 Text("Check for updates (build ${BuildConfig.VERSION_CODE})")
             }
-            if (msg.isNotEmpty()) Text(msg, color = TextDim, fontSize = 12.sp)
+            if (msg.isNotEmpty()) Text(msg, color = TextDim, fontSize = 13.sp)
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -443,7 +451,7 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
 @Composable
 fun SwitchRow(title: String, sub: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Surface1).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.Medium); Text(sub, color = TextDim, fontSize = 12.sp) }
+        Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.Medium); Text(sub, color = TextDim, fontSize = 13.sp) }
         Switch(checked, onChange, colors = SwitchDefaults.colors(checkedTrackColor = RecRed))
     }
 }

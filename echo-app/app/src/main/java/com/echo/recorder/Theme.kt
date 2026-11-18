@@ -12,6 +12,7 @@ val Surface2 = Color(0xFF1E1E2B)
 val RecRed = Color(0xFFFF2D46)
 val RecRedSoft = Color(0xFFFF7A8A)
 val Violet = Color(0xFF8B7CFF)
+val Hairline = Color(0x1FFFFFFF)
 val TextDim = Color(0xFF9A9AB0)
 
 @Composable

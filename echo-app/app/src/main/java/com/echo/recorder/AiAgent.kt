@@ -45,9 +45,8 @@ object AiAgent {
             return
         }
         try {
-            val diarized = s.deepgramKey.isNotBlank()
-            var transcript = if (diarized) transcribeDiarized(s.deepgramKey, File(rec.path))
-                             else transcribe(s.groqKey, File(rec.path))
+            val diarized = false
+            var transcript = transcribe(s.groqKey, File(rec.path))
             rec = rec.copy(transcript = transcript)
             Repository.upsert(rec)
             if (transcript.isNotBlank()) {
@@ -134,30 +133,6 @@ object AiAgent {
             "Earlier recordings (memory):\n" + memory.ifBlank { "(none)" } + "\n\nTranscript:\n" + transcript.take(24000), true
         )
         return JSONObject(out)
-    }
-
-    /** Deepgram nova-3 with speaker diarization; falls back to plain text if no utterances. */
-    private fun transcribeDiarized(key: String, f: File): String {
-        val req = Request.Builder()
-            .url("https://api.deepgram.com/v1/listen?model=nova-3&diarize=true&utterances=true&smart_format=true&detect_language=true")
-            .header("Authorization", "Token $key")
-            .post(f.asRequestBody("audio/mp4".toMediaType())).build()
-        http.newCall(req).execute().use { r ->
-            val txt = r.body?.string().orEmpty()
-            if (!r.isSuccessful) error("Speakers ${r.code}: " + txt.take(80))
-            val res = JSONObject(txt).getJSONObject("results")
-            val u = res.optJSONArray("utterances")
-            if (u == null || u.length() == 0)
-                return res.getJSONArray("channels").getJSONObject(0).getJSONArray("alternatives")
-                    .getJSONObject(0).optString("transcript")
-            val sb = StringBuilder(); var last = -1
-            for (i in 0 until u.length()) {
-                val o = u.getJSONObject(i); val sp = o.optInt("speaker", 0)
-                if (sp != last) { if (sb.isNotEmpty()) sb.append("\n"); sb.append("Speaker $sp: "); last = sp } else sb.append(' ')
-                sb.append(o.optString("transcript"))
-            }
-            return sb.toString()
-        }
     }
 
     /** Ask your past self: answers grounded only in your recordings. */

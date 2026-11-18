@@ -11,4 +11,4 @@ Native Android (Kotlin + Jetpack Compose).
 Build locally: `cd echo-app && gradle assembleRelease`.
 
 ## Cost
-Everything runs free: recording, library, haptics and tags are fully on-device; AI uses Groq's free tier (no card). Deepgram speaker splitting is optional.
+Everything runs free: recording, library, haptics and tags are fully on-device; AI uses Groq's free tier (no card).
