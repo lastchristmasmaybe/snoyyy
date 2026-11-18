@@ -34,6 +34,8 @@ class RecorderService : Service(), SensorEventListener {
 
     private var engine: AudioEngine? = null
     private val speakers = ArrayList<Int>()
+    private val speakerRuns = ArrayList<Long>()
+    private var runSpeaker = -2
     private var file: File? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -86,7 +88,7 @@ class RecorderService : Service(), SensorEventListener {
 
         running = true
         clock.start(System.currentTimeMillis())
-        levels.clear(); speakers.clear(); bookmarks.clear()
+        levels.clear(); speakers.clear(); speakerRuns.clear(); runSpeaker = -2; bookmarks.clear()
         levelSum = 0.0; levelCount = 0; peak = 0f; silentCount = 0
 
         // Must promote to foreground immediately (microphone type needs RECORD_AUDIO).
@@ -169,6 +171,7 @@ class RecorderService : Service(), SensorEventListener {
                 silenceRatio = if (levelCount > 0) silentCount.toFloat() / levelCount else 0f,
                 bookmarks = bookmarks.toList(),
                 voices = voices,
+                speakerRuns = speakerRuns.toList(),
             )
             Repository.upsert(rec)
             savedId = id
@@ -199,6 +202,7 @@ class RecorderService : Service(), SensorEventListener {
         val (lvl, sp) = engine?.poll() ?: (0f to -1)
         levels.add(lvl)
         speakers.add(sp)
+        if (sp >= 0 && sp != runSpeaker) { runSpeaker = sp; speakerRuns.add(elapsed()); speakerRuns.add(sp.toLong()) }
         if (levels.size > 120) { levels.removeAt(0); speakers.removeAt(0) }
         levelSum += lvl; levelCount++
         if (lvl > peak) peak = lvl

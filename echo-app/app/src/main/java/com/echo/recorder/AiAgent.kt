@@ -45,40 +45,59 @@ object AiAgent {
             return
         }
         try {
-            val diarized = false
-            var transcript = transcribe(s.groqKey, File(rec.path))
-            rec = rec.copy(transcript = transcript)
+            val key = s.groqKey
+            val memory = Repository.items.value.filter { it.id != rec.id && it.summary != null }.take(10)
+            val memoryText = memory.joinToString("\n") { "- ${it.title}: ${it.summary} People: ${it.people.joinToString()}" }
+            val glossary = memory.flatMap { it.people.map { p -> p.substringAfter("= ", p) } }.distinct().joinToString(", ")
+
+            // 2) Full transcript: every part of the audio, with timestamps, nothing skipped.
+            val tr = transcribeAll(key, File(rec.path), rec.durationMs, glossary)
+            val labelled = TranscriptTools.format(tr.segs, rec.speakerRuns, rec.voices)
+            rec = rec.copy(transcript = labelled)
             Repository.upsert(rec)
-            if (transcript.isNotBlank()) {
-                val memory = Repository.items.value.filter { it.id != rec.id && it.summary != null }.take(10)
-                    .joinToString("\n") { "- ${it.title}: ${it.summary} People: ${it.people.joinToString()}" }
-                val j = summarize(s.groqKey, transcript, memory, diarized)
-                // Replace "Speaker N" with the names the model could infer from context.
-                j.optJSONObject("speakers")?.let { m ->
-                    m.keys().forEach { k -> val n = m.optString(k); if (n.isNotBlank() && !n.startsWith("Speaker")) transcript = transcript.replace("$k:", "$n:") }
-                }
-                j.optString("labelled_transcript").takeIf { it.length > 20 }?.let { transcript = it }
-                rec = rec.copy(
-                    transcript = transcript,
-                    people = j.optJSONObject("speakers")?.let { m -> m.keys().asSequence().map { k -> k + " = " + m.optString(k) }.toList() } ?: emptyList(),
-                    title = j.optString("title").ifBlank { rec.title },
-                    summary = j.optString("summary").ifBlank { null },
-                    actionItems = j.optJSONArray("action_items")?.let { a -> List(a.length()) { a.getString(it) } } ?: emptyList(),
-                    tags = (rec.tags + (j.optJSONArray("tags")?.let { a -> List(a.length()) { a.getString(it) } } ?: emptyList())).distinct(),
-                )
+            if (labelled.isBlank()) {
+                Repository.upsert(rec.copy(aiStatus = if (tr.gaps > 0) "error:Transcription failed, tap Run AI to retry" else "done"))
+                return
             }
-            Repository.upsert(rec.copy(aiStatus = "done"))
+
+            // 3) Complete notes: every part of the transcript is read, plus your bookmarked moments.
+            val notes = buildNotes(key, labelled, rec, memoryText)
+            var transcript = labelled
+            notes.speakers.forEach { (label, name) ->
+                if (name.isNotBlank() && !name.startsWith("Voice")) transcript = transcript.replace("$label:", "$name:")
+            }
+            val bookmarked = rec.bookmarks.map { ms ->
+                "🔖 [${TranscriptTools.stamp(ms / 1000.0)}] " + TranscriptTools.excerptAround(tr.segs, ms).ifBlank { "(bookmark)" }
+            }
+            rec = rec.copy(
+                transcript = transcript,
+                title = notes.title.ifBlank { rec.title },
+                summary = notes.summary.ifBlank { null },
+                keyPoints = notes.keyPoints,
+                decisions = notes.decisions,
+                actionItems = notes.actionItems,
+                questions = notes.questions,
+                highlights = bookmarked + notes.highlights,
+                people = notes.speakers.map { (k, v) -> "$k = $v" },
+                tags = (rec.tags + notes.tags).distinct(),
+            )
+            val status = when {
+                tr.gaps > 0 -> "error:${tr.gaps} part(s) of the audio could not be transcribed. Tap Run AI to retry."
+                tr.coverage < 0.8 && rec.silenceRatio < 0.6f -> "error:Transcript covers only ${(tr.coverage * 100).toInt()}% of the audio. Tap Run AI to retry."
+                else -> "done"
+            }
+            Repository.upsert(rec.copy(aiStatus = status))
         } catch (e: Exception) {
             Repository.upsert(rec.copy(aiStatus = "error:" + (e.message ?: "failed").take(120)))
         }
     }
 
     /** Free tiers rate-limit; wait and retry politely instead of failing (never falls back to paid). */
-    private fun execRetry(req: Request): okhttp3.Response {
+    private fun execRetry(req: Request, maxTries: Int = 2, maxWaitSec: Long = 30): okhttp3.Response {
         var r = http.newCall(req).execute()
         var tries = 0
-        while (r.code == 429 && tries < 2) {
-            val wait = (r.header("retry-after")?.toLongOrNull() ?: 8L).coerceIn(2L, 30L)
+        while (r.code == 429 && tries < maxTries) {
+            val wait = (r.header("retry-after")?.toLongOrNull() ?: 8L).coerceIn(2L, maxWaitSec)
             r.close(); Thread.sleep(wait * 1000); tries++
             r = http.newCall(req).execute()
         }
@@ -86,22 +105,83 @@ object AiAgent {
     }
 
     private const val GROQ = "https://api.groq.com/openai/v1"
+    private const val MAX_UPLOAD = 20L * 1024 * 1024   // stay under Groq's 25 MB free-tier file limit
 
-    private fun transcribe(key: String, f: File): String =
-        runCatching { transcribeWith("whisper-large-v3-turbo", key, f) }
-            .getOrElse { transcribeWith("whisper-large-v3", key, f) }
+    class Transcription(val segs: List<TranscriptTools.Seg>, val gaps: Int, val coverage: Double)
 
-    private fun transcribeWith(model: String, key: String, f: File): String {
-        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+    /**
+     * Transcribes the whole recording. Long audio is cut (losslessly, with overlap) into pieces that fit
+     * the free upload limit; each piece is primed with the previous text for continuity, then stitched
+     * back together without duplicated or missing words. A failed piece is retried, then marked as a gap.
+     */
+    private fun transcribeAll(key: String, f: File, durationMs: Long, glossary: String): Transcription {
+        val durSec = durationMs / 1000.0
+        val plan: List<Pair<Double, Double>> =
+            if (f.length() <= MAX_UPLOAD) listOf(0.0 to durSec) else {
+                val bytesPerSec = f.length() / maxOf(durSec, 1.0)
+                val chunkSec = (MAX_UPLOAD * 0.85 / bytesPerSec).coerceIn(60.0, 900.0)
+                TranscriptTools.chunkPlan(durSec, chunkSec, 3.0)
+            }
+        var acc: List<TranscriptTools.Seg> = emptyList()
+        var gaps = 0
+        val tmp = File(f.parentFile, "chunk_tmp.m4a")
+        for ((i, range) in plan.withIndex()) {
+            val (from, to) = range
+            val piece: File = if (plan.size == 1) f else {
+                if (!AudioChunker.extract(f, (from * 1e6).toLong(), (to * 1e6).toLong(), tmp)) {
+                    gaps++
+                    acc = acc + TranscriptTools.Seg(from, to, "[⚠ this part could not be read]")
+                    continue
+                }
+                tmp
+            }
+            val prompt = (glossary.take(80) + " " + acc.takeLast(3).joinToString(" ") { it.text }).trim().takeLast(220)
+            val segs = runCatching { whisper(key, piece, from, prompt) }
+                .recoverCatching { Thread.sleep(4000); whisper(key, piece, from, prompt) }
+                .getOrNull()
+            if (segs == null) {
+                gaps++
+                acc = acc + TranscriptTools.Seg(from, to, "[⚠ part ${i + 1} of ${plan.size} could not be transcribed]")
+            } else acc = TranscriptTools.stitch(acc, segs)
+        }
+        runCatching { tmp.delete() }
+        val spoken = acc.filter { !it.text.startsWith("[⚠") }
+        val covered = if (spoken.isEmpty()) 0.0 else (spoken.last().end - spoken.first().start) / maxOf(durSec, 1.0)
+        return Transcription(acc, gaps, covered)
+    }
+
+    private fun whisper(key: String, f: File, offsetSec: Double, prompt: String): List<TranscriptTools.Seg> =
+        runCatching { whisperWith("whisper-large-v3", key, f, offsetSec, prompt) }
+            .getOrElse { whisperWith("whisper-large-v3-turbo", key, f, offsetSec, prompt) }
+
+    private fun whisperWith(model: String, key: String, f: File, offsetSec: Double, prompt: String): List<TranscriptTools.Seg> {
+        val b = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("model", model)
-            .addFormDataPart("file", f.name, f.asRequestBody("audio/mp4".toMediaType()))
-            .build()
+            .addFormDataPart("response_format", "verbose_json")
+            .addFormDataPart("timestamp_granularities[]", "segment")
+            .addFormDataPart("temperature", "0")
+        if (prompt.isNotBlank()) b.addFormDataPart("prompt", prompt)
+        b.addFormDataPart("file", f.name, f.asRequestBody("audio/mp4".toMediaType()))
         val req = Request.Builder().url("$GROQ/audio/transcriptions")
-            .header("Authorization", "Bearer $key").post(body).build()
-        execRetry(req).use { r ->
+            .header("Authorization", "Bearer $key").post(b.build()).build()
+        execRetry(req, maxTries = 4, maxWaitSec = 60).use { r ->
             val txt = r.body?.string().orEmpty()
             if (!r.isSuccessful) error("Transcription ${r.code}: " + txt.take(80))
-            return JSONObject(txt).optString("text")
+            val j = JSONObject(txt)
+            val arr = j.optJSONArray("segments")
+            if (arr == null || arr.length() == 0) {
+                val t = j.optString("text").trim()
+                return if (t.isEmpty()) emptyList() else listOf(TranscriptTools.Seg(offsetSec, offsetSec + j.optDouble("duration", 0.0), t))
+            }
+            val out = ArrayList<TranscriptTools.Seg>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                // drop Whisper's well-known hallucinations on silence, keep everything that is real speech
+                if (o.optDouble("no_speech_prob", 0.0) > 0.6 && o.optDouble("avg_logprob", 0.0) < -0.8) continue
+                val t = o.optString("text").trim()
+                if (t.isNotEmpty()) out.add(TranscriptTools.Seg(offsetSec + o.optDouble("start"), offsetSec + o.optDouble("end"), t))
+            }
+            return out
         }
     }
 
@@ -162,19 +242,75 @@ object AiAgent {
         }
     }
 
-    private fun summarize(key: String, transcript: String, memory: String, diarized: Boolean): JSONObject {
+    class Notes(
+        val title: String, val summary: String, val keyPoints: List<String>, val decisions: List<String>,
+        val actionItems: List<String>, val questions: List<String>, val highlights: List<String>,
+        val speakers: List<Pair<String, String>>, val tags: List<String>,
+    )
+
+    private fun strings(a: org.json.JSONArray?): List<String> = if (a == null) emptyList() else List(a.length()) { a.optString(it) }
+    private fun parseObj(out: String): JSONObject = JSONObject(out.substring(out.indexOf('{'), out.lastIndexOf('}') + 1))
+
+    /**
+     * Map-reduce so nothing is cut off: every ~7k-character part of the transcript is read and mined for
+     * points, decisions, tasks, questions and key moments; those lists are merged (never re-summarised away),
+     * then one final pass writes the title, a thorough summary, tags and who the voices are.
+     */
+    private fun buildNotes(key: String, transcript: String, rec: Recording, memory: String): Notes {
+        val parts = TranscriptTools.chunkText(transcript, 7000)
+        val kp = ArrayList<String>(); val dec = ArrayList<String>(); val act = ArrayList<String>()
+        val qs = ArrayList<String>(); val hl = ArrayList<String>(); val names = ArrayList<String>()
+        for ((i, part) in parts.withIndex()) {
+            val out = chat(
+                key,
+                "You extract notes from part ${i + 1} of ${parts.size} of a voice-recording transcript. Timestamps look like [mm:ss]. " +
+                    "Miss NOTHING that matters: keep every name, number, date, amount, deadline, commitment and reason, quoted exactly. " +
+                    "Resolve pronouns and references (he, she, that project) using the transcript and the user's earlier recordings. " +
+                    "Never invent facts. Reply ONLY with JSON: {\"key_points\":[strings], \"decisions\":[strings], " +
+                    "\"action_items\":[{\"task\":string,\"owner\":string,\"due\":string}], \"questions\":[open questions], " +
+                    "\"highlights\":[{\"t\":\"mm:ss\",\"text\":string}] (the most important moments), \"names\":[people, places, orgs]}",
+                "Earlier recordings (memory):\n" + memory.ifBlank { "(none)" } + "\n\nTranscript part:\n" + part, true
+            )
+            val j = runCatching { parseObj(out) }.getOrNull() ?: continue
+            kp += strings(j.optJSONArray("key_points")); dec += strings(j.optJSONArray("decisions"))
+            qs += strings(j.optJSONArray("questions")); names += strings(j.optJSONArray("names"))
+            j.optJSONArray("action_items")?.let { a ->
+                for (k in 0 until a.length()) {
+                    val o = a.optJSONObject(k) ?: continue
+                    val owner = o.optString("owner").takeIf { it.isNotBlank() && !it.equals("unknown", true) }
+                    val due = o.optString("due").takeIf { it.isNotBlank() && !it.equals("none", true) && !it.equals("unknown", true) }
+                    act += o.optString("task") + (owner?.let { " — $it" } ?: "") + (due?.let { " (by $it)" } ?: "")
+                }
+            }
+            j.optJSONArray("highlights")?.let { a ->
+                for (k in 0 until a.length()) { val o = a.optJSONObject(k) ?: continue; hl += "[${o.optString("t")}] ${o.optString("text")}" }
+            }
+        }
+        val keyPoints = TranscriptTools.dedupe(kp); val decisions = TranscriptTools.dedupe(dec)
+        val questions = TranscriptTools.dedupe(qs)
+        val condensed = ("Key points:\n" + keyPoints.joinToString("\n") { "- $it" } +
+            "\nDecisions:\n" + decisions.joinToString("\n") { "- $it" } +
+            "\nNames: " + TranscriptTools.dedupe(names).joinToString(", ")).take(20000)
+        val voices = if (rec.voices >= 2) "The transcript labels speakers Voice 1..Voice ${rec.voices}. Infer who each is from how they address each other; use a name only if the evidence is clear, else a role or keep 'Voice N'. " else ""
         val out = chat(
             key,
-            "You are the intelligence inside a voice recorder. Understand context and references: resolve pronouns " +
-                "and phrases like 'he', 'that demo', 'the client' using the transcript and the user's earlier recordings. " +
-                (if (diarized) "The transcript is labelled Speaker 0, Speaker 1... Infer who each speaker is from how they address " +
-                    "each other and introduce themselves; use a name only if the evidence is clear, otherwise a role or 'Unknown'. " else "") +
-                "Reply ONLY with a JSON object with keys: title (max 6 words), summary (2-3 sentences with references resolved), " +
-                "action_items (array of short strings, each naming the owner if known), tags (array of up to 4 lowercase words)" +
-                (if (diarized) ", speakers (object mapping label like \"Speaker 0\" to a name or role)." else "."),
-            "Earlier recordings (memory):\n" + memory.ifBlank { "(none)" } + "\n\nTranscript:\n" + transcript.take(24000), true
+            "You write the final notes for a voice recording. $voices" +
+                "Be thorough: the summary must cover EVERY topic discussed, in order, with the specifics (names, numbers, dates). " +
+                "Resolve references using the user's earlier recordings. Never invent facts. Reply ONLY with JSON: " +
+                "{\"title\":string (max 7 words), \"summary\":string (as many short paragraphs as needed, one per topic), " +
+                "\"tags\":[up to 5 lowercase words], \"speakers\":{\"Voice 1\":name-or-role}}",
+            "Earlier recordings (memory):\n" + memory.ifBlank { "(none)" } + "\n\nNotes gathered from the whole recording:\n" + condensed +
+                "\n\nOpening of the transcript:\n" + transcript.take(2500), true
         )
-        return JSONObject(out)
+        val f = runCatching { parseObj(out) }.getOrNull() ?: JSONObject()
+        val sp = f.optJSONObject("speakers")
+        return Notes(
+            title = f.optString("title"), summary = f.optString("summary"),
+            keyPoints = keyPoints, decisions = decisions, actionItems = TranscriptTools.dedupe(act),
+            questions = questions, highlights = TranscriptTools.dedupe(hl),
+            speakers = sp?.keys()?.asSequence()?.map { it to sp.optString(it) }?.toList() ?: emptyList(),
+            tags = strings(f.optJSONArray("tags")),
+        )
     }
 
     fun test(key: String): String { chat(key, "Reply with the single word OK.", "ping", false); return "Connected ✓ · " + chatModel }
@@ -183,12 +319,12 @@ object AiAgent {
     fun ask(key: String, question: String, items: List<Recording>): String {
         val ctx = items.filter { !it.transcript.isNullOrBlank() }.take(15).joinToString("\n\n") {
             "[" + java.text.SimpleDateFormat("d MMM h:mm a", java.util.Locale.getDefault()).format(java.util.Date(it.createdAt)) +
-                " · ${it.title}]\n" + (it.summary ?: "") + "\n" + it.transcript!!.take(2500)
+                " · ${it.title}]\n" + (it.summary ?: "") + "\n" + it.keyPoints.joinToString("\n") { k -> "- $k" } + "\n" + it.transcript!!.take(4000)
         }
         if (ctx.isBlank()) return "No transcripts yet. Record something with AI enabled first."
         return chat(
             key,
-            "Answer the question using ONLY the user's recordings below. Be brief. If the answer isn't there, say so.",
+            "Answer the question using ONLY the user's recordings below. Be accurate and complete; cite the recording and time. If the answer isn't there, say so.",
             "Recordings:\n$ctx\n\nQuestion: $question", false
         )
     }

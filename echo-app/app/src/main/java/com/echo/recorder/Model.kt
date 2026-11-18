@@ -19,6 +19,11 @@ data class Recording(
     val tags: List<String> = emptyList(),
     val people: List<String> = emptyList(),
     val voices: Int = 0,
+    val keyPoints: List<String> = emptyList(),
+    val decisions: List<String> = emptyList(),
+    val highlights: List<String> = emptyList(),
+    val questions: List<String> = emptyList(),
+    val speakerRuns: List<Long> = emptyList(),
     /** pending | working | done | local | error:<msg> */
     val aiStatus: String = "pending",
 ) {
@@ -34,6 +39,11 @@ data class Recording(
         put("tags", JSONArray(tags))
         put("people", JSONArray(people))
         put("voices", voices)
+        put("keyPoints", JSONArray(keyPoints))
+        put("decisions", JSONArray(decisions))
+        put("highlights", JSONArray(highlights))
+        put("questions", JSONArray(questions))
+        put("speakerRuns", JSONArray(speakerRuns))
         put("aiStatus", aiStatus)
     }
 
@@ -54,6 +64,11 @@ data class Recording(
             tags = o.optJSONArray("tags").toStringList(),
             people = o.optJSONArray("people").toStringList(),
             voices = o.optInt("voices", 0),
+            keyPoints = o.optJSONArray("keyPoints").toStringList(),
+            decisions = o.optJSONArray("decisions").toStringList(),
+            highlights = o.optJSONArray("highlights").toStringList(),
+            questions = o.optJSONArray("questions").toStringList(),
+            speakerRuns = o.optJSONArray("speakerRuns").toLongList(),
             aiStatus = o.optString("aiStatus", "pending"),
         )
     }
