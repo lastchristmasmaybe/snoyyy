@@ -135,6 +135,8 @@ object AiAgent {
         return JSONObject(out)
     }
 
+    fun test(key: String): String = chat(key, "Reply with the single word OK.", "ping", false)
+
     /** Ask your past self: answers grounded only in your recordings. */
     fun ask(key: String, question: String, items: List<Recording>): String {
         val ctx = items.filter { !it.transcript.isNullOrBlank() }.take(15).joinToString("\n\n") {

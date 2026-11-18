@@ -13,7 +13,7 @@ object NotificationWave {
     fun render(levels: List<Float>, paused: Boolean, w: Int = 720, h: Int = 200): Bitmap {
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
-        c.drawColor(Color.parseColor("#0B0B12"))
+        c.drawColor(Color.parseColor("#F2EEDD"))
         val bars = 48
         val gap = 5f
         val bw = (w - gap * (bars + 1)) / bars
@@ -21,8 +21,8 @@ object NotificationWave {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             shader = LinearGradient(
                 0f, 0f, w.toFloat(), 0f,
-                if (paused) Color.parseColor("#55FFFFFF") else Color.parseColor("#FF7A8A"),
-                if (paused) Color.parseColor("#22FFFFFF") else Color.parseColor("#FF2D46"),
+                if (paused) Color.parseColor("#889A8A") else Color.parseColor("#FF6B7D"),
+                if (paused) Color.parseColor("#CBD3C2") else Color.parseColor("#E5263F"),
                 Shader.TileMode.CLAMP
             )
         }
