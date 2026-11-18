@@ -57,7 +57,7 @@ class RecorderService : Service(), SensorEventListener {
             if (!running) return
             if (!paused) sample()
             publishState()
-            if (tickCount++ % 5 == 0) notifyUpdate()
+            if (tickCount++ % 10 == 0) notifyUpdate()
             handler.postDelayed(this, 100)
         }
     }

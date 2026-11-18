@@ -58,6 +58,7 @@ object AiAgent {
                 j.optJSONObject("speakers")?.let { m ->
                     m.keys().forEach { k -> val n = m.optString(k); if (n.isNotBlank() && !n.startsWith("Speaker")) transcript = transcript.replace("$k:", "$n:") }
                 }
+                j.optString("labelled_transcript").takeIf { it.length > 20 }?.let { transcript = it }
                 rec = rec.copy(
                     transcript = transcript,
                     people = j.optJSONObject("speakers")?.let { m -> m.keys().asSequence().map { k -> k + " = " + m.optString(k) }.toList() } ?: emptyList(),
@@ -73,6 +74,18 @@ object AiAgent {
         }
     }
 
+    /** Free tiers rate-limit; wait and retry politely instead of failing (never falls back to paid). */
+    private fun execRetry(req: Request): okhttp3.Response {
+        var r = http.newCall(req).execute()
+        var tries = 0
+        while (r.code == 429 && tries < 2) {
+            val wait = (r.header("retry-after")?.toLongOrNull() ?: 8L).coerceIn(2L, 30L)
+            r.close(); Thread.sleep(wait * 1000); tries++
+            r = http.newCall(req).execute()
+        }
+        return r
+    }
+
     private const val GROQ = "https://api.groq.com/openai/v1"
 
     private fun transcribe(key: String, f: File): String {
@@ -82,7 +95,7 @@ object AiAgent {
             .build()
         val req = Request.Builder().url("$GROQ/audio/transcriptions")
             .header("Authorization", "Bearer $key").post(body).build()
-        http.newCall(req).execute().use { r ->
+        execRetry(req).use { r ->
             val txt = r.body?.string().orEmpty()
             if (!r.isSuccessful) error("Transcription ${r.code}: " + txt.take(80))
             return JSONObject(txt).optString("text")
@@ -100,9 +113,9 @@ object AiAgent {
         val req = Request.Builder().url("$GROQ/chat/completions")
             .header("Authorization", "Bearer $key")
             .post(payload.toString().toRequestBody("application/json".toMediaType())).build()
-        http.newCall(req).execute().use { r ->
+        execRetry(req).use { r ->
             val txt = r.body?.string().orEmpty()
-            if (!r.isSuccessful) error("AI ${r.code}: " + txt.take(80))
+            if (!r.isSuccessful) error(if (r.code == 429) "Free limit reached, tap Run AI again later" else "AI ${r.code}: " + txt.take(80))
             return JSONObject(txt).getJSONArray("choices").getJSONObject(0)
                 .getJSONObject("message").getString("content")
         }

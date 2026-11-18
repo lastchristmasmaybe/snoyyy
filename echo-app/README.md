@@ -9,3 +9,6 @@ Native Android (Kotlin + Jetpack Compose).
 - **Auto build & update**: GitHub Actions builds a signed APK on every push and publishes a rolling `latest` release from `main`; the app shows an update banner.
 
 Build locally: `cd echo-app && gradle assembleRelease`.
+
+## Cost
+Everything runs free: recording, library, haptics and tags are fully on-device; AI uses Groq's free tier (no card). Deepgram speaker splitting is optional.

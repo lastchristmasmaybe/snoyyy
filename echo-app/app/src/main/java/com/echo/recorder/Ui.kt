@@ -295,6 +295,24 @@ fun RecordingCard(r: Recording) {
     val ctx = LocalContext.current
     val playing by Player.playingId.collectAsStateWithLifecycle()
     var open by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            containerColor = Surface1,
+            icon = { Icon(Icons.Default.DeleteForever, null, tint = RecRedSoft) },
+            title = { Text("Delete this recording?") },
+            text = { Text("The audio, transcript and summary are removed from this phone. This can't be undone.") },
+            confirmButton = {
+                Button(onClick = {
+                    confirmDelete = false
+                    if (playing == r.id) Player.stop()
+                    Repository.delete(r.id)
+                }, colors = ButtonDefaults.buttonColors(containerColor = RecRed)) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+        )
+    }
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Surface1)
             .clickable { open = !open }.padding(16.dp),
@@ -344,7 +362,7 @@ fun RecordingCard(r: Recording) {
                 if (r.aiStatus == "local" || r.aiStatus.startsWith("error")) {
                     TextButton(onClick = { EchoApp.appScope.launchAi(ctx.applicationContext, r.id) }) { Text("Run AI again") }
                 }
-                TextButton(onClick = { if (playing == r.id) Player.stop(); Repository.delete(r.id) }) {
+                TextButton(onClick = { confirmDelete = true }) {
                     Text("Delete", color = RecRedSoft)
                 }
             }
@@ -379,7 +397,7 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
         item { Spacer(Modifier.height(16.dp)); Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.Bold) }
         item {
             Text("AI brain", fontWeight = FontWeight.SemiBold)
-            Text("One free Groq key powers transcripts, summaries, action items and Ask. Get it at console.groq.com. The key stays on this device; recording audio is uploaded to Groq only for transcription.", color = TextDim, fontSize = 12.sp)
+            Text("Zero cost: one free Groq key (no card) powers transcripts, summaries, action items and Ask. Get it at console.groq.com. If you hit the free limit Echo waits and retries; it never switches to a paid plan. The key stays on this device; recording audio is uploaded to Groq only for transcription.", color = TextDim, fontSize = 12.sp)
         }
         item {
             OutlinedTextField(groq, { groq = it; s.groqKey = it }, label = { Text("Groq API key") },
@@ -389,7 +407,7 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
         item {
             var dg by remember { mutableStateOf(s.deepgramKey) }
             Text("Who said what", fontWeight = FontWeight.SemiBold)
-            Text("Optional free Deepgram key (deepgram.com) separates speakers. Echo then names them from context.", color = TextDim, fontSize = 12.sp)
+            Text("Optional. Without it Echo still infers speakers from the text for free. Deepgram gives sharper splits, but its free credit is one-time.", color = TextDim, fontSize = 12.sp)
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(dg, { dg = it; s.deepgramKey = it }, label = { Text("Deepgram API key") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(),
