@@ -41,6 +41,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -58,13 +59,19 @@ import java.util.Locale
 private val Serif = FontFamily.SansSerif
 
 @Composable
-private fun Wordmark(count: Int) {
+private fun Wordmark(count: Int, onSea: Boolean = false) {
+    val c = if (onSea) Color.White else Ink
+    val d = if (onSea) Color.White.copy(alpha = 0.85f) else TextDim
     Row(Modifier.fillMaxWidth().padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.Default.GraphicEq, null, tint = Ink, modifier = Modifier.size(30.dp))
+        Icon(Icons.Default.GraphicEq, null, tint = c, modifier = Modifier.size(30.dp))
         Spacer(Modifier.width(8.dp))
-        Text("echo", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 32.sp, letterSpacing = (-1).sp, color = Ink)
+        Text("echo", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 32.sp, letterSpacing = (-1).sp, color = c, style = TextStyle(shadow = if (onSea) Shadow(Color.Black.copy(0.3f), blurRadius = 10f) else null))
         Spacer(Modifier.weight(1f))
-        Text(if (count == 1) "1 memory" else "$count memories", color = TextDim, fontSize = 14.sp)
+        Text(
+            (if (count == 1) "1 memory" else "$count memories"), color = d, fontSize = 14.sp,
+            modifier = if (onSea) Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.18f))
+                .border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(50)).padding(horizontal = 12.dp, vertical = 6.dp) else Modifier,
+        )
     }
 }
 
@@ -86,10 +93,22 @@ fun EchoRoot() {
     var progress by remember { mutableStateOf(-1) }
     val items by Repository.items.collectAsStateWithLifecycle()
 
+    val onSea = tab == 0
+    val view = androidx.compose.ui.platform.LocalView.current
+    SideEffect {
+        (ctx as? android.app.Activity)?.window?.let { w ->
+            androidx.core.view.WindowCompat.getInsetsController(w, view).apply {
+                isAppearanceLightStatusBars = !onSea
+                isAppearanceLightNavigationBars = !onSea
+            }
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Cream)) {
+    if (onSea) OceanWallpaper(Modifier.fillMaxSize())
     Scaffold(
-        containerColor = Cream,
+        containerColor = Color.Transparent,
         bottomBar = {
-            NavigationBar(containerColor = NavSurface, tonalElevation = 0.dp) {
+            NavigationBar(containerColor = if (onSea) Color(0x59081C2B) else NavSurface, tonalElevation = 0.dp) {
                 listOf(
                     Triple("Record", Icons.Default.Mic, 0),
                     Triple("Memories", Icons.Default.MenuBook, 1),
@@ -102,8 +121,11 @@ fun EchoRoot() {
                         icon = { Icon(icon, label) },
                         label = { Text(label, fontSize = 12.sp) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Ink, indicatorColor = NavPill,
-                            unselectedIconColor = TextDim, selectedTextColor = Ink, unselectedTextColor = TextDim,
+                            selectedIconColor = if (onSea) Color.White else Ink,
+                            indicatorColor = if (onSea) Color.White.copy(alpha = 0.22f) else NavPill,
+                            unselectedIconColor = if (onSea) Color.White.copy(alpha = 0.75f) else TextDim,
+                            selectedTextColor = if (onSea) Color.White else Ink,
+                            unselectedTextColor = if (onSea) Color.White.copy(alpha = 0.75f) else TextDim,
                         ),
                     )
                 }
@@ -132,15 +154,16 @@ fun EchoRoot() {
                 }
             }
             Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-                Wordmark(items.size)
+                Wordmark(items.size, onSea)
                 when (tab) {
-                    0 -> HomeScreen()
+                    0 -> HomeScreen { tab = it }
                     1 -> MemoriesScreen()
                     2 -> AskScreen()
                     else -> SettingsScreen { update = it }
                 }
             }
         }
+    }
     }
 }
 
@@ -167,8 +190,7 @@ private fun VoiceRingCard(ui: RecorderState.UiState, active: Boolean) {
     val energies = floatArrayOf(e0, e1, e2)
 
     Box(
-        Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(28.dp))
-            .background(Brush.linearGradient(listOf(Color(0xFF1B2A6B), Color(0xFF4B49C8), Color(0xFF7A62F0)))),
+        Modifier.fillMaxWidth().height(320.dp),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.matchParentSize()) {
@@ -187,7 +209,7 @@ private fun VoiceRingCard(ui: RecorderState.UiState, active: Boolean) {
                     if (s == 0) path.moveTo(x, y) else path.lineTo(x, y)
                 }
                 path.close()
-                drawPath(path, color.copy(alpha = alpha), style = Stroke(width = 1.3.dp.toPx()))
+                drawPath(path, color.copy(alpha = alpha), style = Stroke(width = (if (color == Color.White) 1.2.dp else 1.9.dp).toPx()))
             }
             // soft white threads: overall voice energy
             for (k in 0 until 7) loop(Color.White, 6, calm + 0.04f + overall * 0.20f, k, 1f, 0.55f - k * 0.04f)
@@ -205,7 +227,8 @@ private fun VoiceRingCard(ui: RecorderState.UiState, active: Boolean) {
             )
             Text(
                 RecorderService.fmt(ui.elapsedMs),
-                color = Color.White, fontWeight = FontWeight.Bold, fontSize = 44.sp, letterSpacing = (-1).sp,
+                color = Color.White, fontWeight = FontWeight.Bold, fontSize = 48.sp, letterSpacing = (-1).sp,
+                style = TextStyle(shadow = Shadow(Color.Black.copy(0.35f), blurRadius = 14f)),
             )
             if (active && ui.voices > 1) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 4.dp)) {
@@ -245,12 +268,23 @@ private fun GaugeCard(percent: Int, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun HomeScreen() {
+private fun Glass(modifier: Modifier = Modifier, tint: Color = Color.White.copy(alpha = 0.16f), onClick: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
+    val shape = RoundedCornerShape(24.dp)
+    Column(
+        modifier.clip(shape).background(tint).border(1.dp, Color.White.copy(alpha = 0.32f), shape)
+            .let { if (onClick != null) it.clickable { onClick() } else it }.padding(16.dp),
+        content = content,
+    )
+}
+
+@Composable
+fun HomeScreen(onGo: (Int) -> Unit = {}) {
     val ctx = LocalContext.current
     val ui by RecorderState.state.collectAsStateWithLifecycle()
     val items by Repository.items.collectAsStateWithLifecycle()
     val hasKeys = Settings(ctx).groqKey.isNotBlank()
     val active = ui.status != RecorderState.Status.Idle
+    val shadow = TextStyle(shadow = Shadow(Color.Black.copy(0.35f), blurRadius = 16f))
 
     val perms = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
         if (r[Manifest.permission.RECORD_AUDIO] == true) RecorderService.send(ctx, RecorderService.ACTION_START)
@@ -266,10 +300,15 @@ fun HomeScreen() {
 
     LazyColumn(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
         item {
-            Spacer(Modifier.height(14.dp))
-            VoiceRingCard(ui, active)
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(18.dp))
+            Column(Modifier.fillMaxWidth()) {
+                Text("A LITTLE ROOM FOR YOU", color = Color.White.copy(alpha = 0.9f), fontSize = 12.sp, letterSpacing = 2.5.sp, style = shadow)
+                Spacer(Modifier.height(6.dp))
+                Text("Say it.\nKeep the thought.", color = Color.White, fontFamily = Serif, fontWeight = FontWeight.ExtraBold,
+                    fontSize = 40.sp, lineHeight = 42.sp, letterSpacing = (-2).sp, style = shadow)
+            }
         }
+        item { VoiceRingCard(ui, active) }
         item {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                 AnimatedVisibility(active) {
@@ -283,39 +322,98 @@ fun HomeScreen() {
                     }
                 }
             }
-            Text(if (active) "Tap to stop" else "Tap to record", color = Ink, fontSize = 16.sp)
-            Spacer(Modifier.height(10.dp))
+            Text(if (active) "Tap to stop" else "Tap to record", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Medium, style = shadow)
+            Spacer(Modifier.height(6.dp))
             Text(
                 if (active) "Keeps recording when your phone locks.${if (ui.bookmarks.isNotEmpty()) "  🔖 ${ui.bookmarks.size}" else "  Shake to bookmark."}"
-                else "Say it now. Find it later.\nAI turns it into searchable memories.",
-                color = TextDim, fontSize = 14.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                else "AI turns it into searchable memories.",
+                color = Color.White.copy(alpha = 0.88f), fontSize = 14.sp, style = shadow,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
             Spacer(Modifier.height(22.dp))
         }
         item {
-            val done = items.count { it.aiStatus == "done" }
-            val pct = if (items.isEmpty()) 0 else done * 100 / items.size
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                GaugeCard(pct, Modifier.weight(1f))
-                Column(
-                    Modifier.weight(1f).height(150.dp).clip(RoundedCornerShape(24.dp)).background(NavPill).padding(16.dp),
-                    verticalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text("Captured", color = TextDim, fontSize = 13.sp)
-                    Text("${items.sumOf { it.durationMs } / 60000}", color = Ink, fontSize = 40.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
-                    Text("minutes · ${items.size} ${if (items.size == 1) "memory" else "memories"}", color = TextDim, fontSize = 13.sp)
+                Glass(Modifier.weight(1f), tint = Violet.copy(alpha = 0.55f), onClick = { onGo(1) }) {
+                    Text("YOUR COLLECTION", color = Color.White.copy(alpha = 0.85f), fontSize = 11.sp, letterSpacing = 1.5.sp)
+                    Text("Open memories ↗", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
+                    Text("Replay, search, reconnect.", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
+                }
+                Glass(Modifier.weight(1f), onClick = { onGo(2) }) {
+                    Text("FIND THE THREAD", color = Color.White.copy(alpha = 0.85f), fontSize = 11.sp, letterSpacing = 1.5.sp)
+                    Text("Ask a question ↗", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
+                    Text("Answers from your notes.", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
                 }
             }
             Spacer(Modifier.height(18.dp))
-        }
-        item {
-            Text("Smart suggestions", color = TextDim, fontSize = 13.sp, letterSpacing = 1.sp, modifier = Modifier.fillMaxWidth())
+            Text("Smart suggestions", color = Color.White.copy(alpha = 0.9f), fontSize = 13.sp, letterSpacing = 1.sp, modifier = Modifier.fillMaxWidth(), style = shadow)
             Spacer(Modifier.height(8.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(AiAgent.insights(items, hasKeys)) { InsightCard(it) }
             }
             Spacer(Modifier.height(20.dp))
         }
+    }
+}
+
+/** Living ocean wallpaper: shimmering water, drifting wave lines, twinkling sparkles, a green hill. */
+@Composable
+fun OceanWallpaper(modifier: Modifier = Modifier) {
+    val t by rememberInfiniteTransition(label = "sea").animateFloat(
+        0f, (2 * Math.PI).toFloat(),
+        infiniteRepeatable(tween(14000, easing = androidx.compose.animation.core.LinearEasing)), label = "t",
+    )
+    val sparkles = remember {
+        val r = kotlin.random.Random(7)
+        List(120) { floatArrayOf(r.nextFloat(), r.nextFloat(), r.nextFloat() * 6.28f, 0.6f + r.nextFloat() * 1.8f, r.nextFloat()) }
+    }
+    Canvas(modifier) {
+        val w = size.width; val h = size.height
+        val horizon = h * 0.70f
+        val px = 1.dp.toPx()
+        // water
+        drawRect(Brush.verticalGradient(
+            listOf(Color(0xFFCDEBF2), Color(0xFF7DBFD8), Color(0xFF2B79B0), Color(0xFF14456F)), 0f, h))
+        // sun glare
+        drawRect(Brush.radialGradient(
+            listOf(Color.White.copy(alpha = 0.45f), Color.Transparent), Offset(w * 0.72f, h * 0.22f), w * 0.75f))
+        // drifting wave lines
+        for (k in 0 until 18) {
+            val y0 = h * 0.04f + k * (horizon - h * 0.04f) / 18f
+            val path = Path(); path.moveTo(0f, y0)
+            var x = 0f
+            while (x <= w) {
+                x += 14f
+                path.lineTo(x, y0 + kotlin.math.sin(x / w * 9f + t * (1f + (k % 3) * 0.4f) + k) * (2f + k * 0.55f) * px)
+            }
+            drawPath(path, Color.White.copy(alpha = 0.08f + 0.12f * (k / 18f)), style = Stroke(width = (0.8f + k * 0.08f) * px))
+        }
+        // twinkling sparkles
+        for (s in sparkles) {
+            val x = s[0] * w; val y = h * 0.03f + s[1] * (horizon - h * 0.03f)
+            val tw = (kotlin.math.sin(t * s[3] * 2f + s[2]) + 1f) / 2f
+            val a = tw * tw * tw * (0.35f + 0.65f * s[1])
+            val r = (0.9f + s[4] * 2.4f) * px
+            drawCircle(Color.White.copy(alpha = a), r, Offset(x, y))
+            if (s[4] > 0.86f) {
+                drawLine(Color.White.copy(alpha = a), Offset(x - r * 3, y), Offset(x + r * 3, y), px)
+                drawLine(Color.White.copy(alpha = a), Offset(x, y - r * 3), Offset(x, y + r * 3), px)
+            }
+        }
+        // green hill + darker foreground
+        val hill = Path().apply {
+            moveTo(0f, h * 0.84f); quadraticBezierTo(w * 0.42f, h * 0.70f, w, h * 0.80f)
+            lineTo(w, h); lineTo(0f, h); close()
+        }
+        drawPath(hill, Brush.verticalGradient(listOf(Color(0xFFA9CB42), Color(0xFF58922D), Color(0xFF2E6A27)), h * 0.72f, h))
+        val front = Path().apply {
+            moveTo(0f, h * 0.95f); quadraticBezierTo(w * 0.55f, h * 0.86f, w, h * 0.93f)
+            lineTo(w, h); lineTo(0f, h); close()
+        }
+        drawPath(front, Color(0xFF244F22).copy(alpha = 0.9f))
+        // legibility scrims
+        drawRect(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.30f), Color.Transparent), 0f, h * 0.28f))
+        drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.40f)), h * 0.62f, h))
     }
 }
 
@@ -329,7 +427,7 @@ fun RecordButton(pulsing: Boolean, active: Boolean, onClick: () -> Unit) {
     val press by animateFloatAsState(if (pressed) 0.92f else 1f, spring(dampingRatio = 0.5f, stiffness = 500f), label = "press")
     Box(Modifier.size(150.dp), contentAlignment = Alignment.Center) {
         if (pulsing) Box(Modifier.size(104.dp).scale(ring).alpha(ringAlpha).clip(CircleShape).background(RecRed))
-        Box(Modifier.size(136.dp).clip(CircleShape).background(RecRed.copy(alpha = 0.14f)))
+        Box(Modifier.size(136.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.22f)).border(1.dp, Color.White.copy(alpha = 0.45f), CircleShape))
         Box(
             Modifier.size(104.dp).scale(press)
                 .shadow(18.dp, CircleShape, ambientColor = RecRed, spotColor = RecRed)
@@ -347,12 +445,12 @@ fun RecordButton(pulsing: Boolean, active: Boolean, onClick: () -> Unit) {
 @Composable
 fun SmallRound(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, onClick: () -> Unit) {
     Box(
-        Modifier.size(52.dp).clip(CircleShape).background(NavPill).clickable { onClick() },
+        Modifier.size(52.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.22f)).border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape).clickable { onClick() },
         contentAlignment = Alignment.Center,
-    ) { Icon(icon, desc, tint = Ink) }
+    ) { Icon(icon, desc, tint = Color.White) }
 }
 
-val SpeakerColors = listOf(Color(0xFF4DA3FF), Color(0xFFFF9A3D), Color(0xFF2EC98A))
+val SpeakerColors = listOf(Color(0xFF3D9BFF), Color(0xFFFFA23D), Color(0xFF2EE0A0))
 
 @Composable
 fun Waveform(levels: List<Float>, speakers: List<Int>, active: Boolean, modifier: Modifier) {
@@ -378,12 +476,12 @@ fun Waveform(levels: List<Float>, speakers: List<Int>, active: Boolean, modifier
 @Composable
 fun InsightCard(i: Insight) {
     Column(
-        Modifier.width(260.dp).clip(RoundedCornerShape(20.dp)).background(CreamCard)
-            .border(1.dp, Hairline, RoundedCornerShape(20.dp)).padding(16.dp),
+        Modifier.width(260.dp).clip(RoundedCornerShape(20.dp)).background(Color.White.copy(alpha = 0.16f))
+            .border(1.dp, Color.White.copy(alpha = 0.32f), RoundedCornerShape(20.dp)).padding(16.dp),
     ) {
-        Text("${i.emoji}  ${i.title}", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = Ink)
+        Text("${i.emoji}  ${i.title}", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = Color.White)
         Spacer(Modifier.height(4.dp))
-        Text(i.body, color = TextDim, fontSize = 13.sp, maxLines = 3)
+        Text(i.body, color = Color.White.copy(alpha = 0.88f), fontSize = 13.sp, maxLines = 3)
     }
 }
 
