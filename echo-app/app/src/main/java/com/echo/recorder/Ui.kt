@@ -57,6 +57,8 @@ fun EchoRoot() {
     var update by remember { mutableStateOf<UpdateInfo?>(null) }
     LaunchedEffect(Unit) { update = withContext(Dispatchers.IO) { Updater.check() } }
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var progress by remember { mutableStateOf(-1) }
 
     Scaffold(
         containerColor = Ink,
@@ -85,14 +87,19 @@ fun EchoRoot() {
         Column(Modifier.padding(pad).fillMaxSize()) {
             update?.let { u ->
                 Row(
-                    Modifier.fillMaxWidth().background(Violet).clickable {
-                        ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u.url)))
+                    Modifier.fillMaxWidth().background(Violet).clickable(enabled = progress < 0) {
+                        progress = 0
+                        scope.launch {
+                            val f = withContext(Dispatchers.IO) { Updater.download(ctx, u) { progress = it } }
+                            progress = -1
+                            if (f != null) Updater.install(ctx, f)
+                        }
                     }.padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(Icons.Default.SystemUpdate, null, tint = Color.White)
                     Spacer(Modifier.width(10.dp))
-                    Text("Update available (build ${u.build}) — tap to install", color = Color.White, fontWeight = FontWeight.Medium)
+                    Text(if (progress >= 0) "Downloading update… $progress%" else "Update ready (build ${u.build}) — tap to install", color = Color.White, fontWeight = FontWeight.Medium)
                 }
             }
             when (tab) {
