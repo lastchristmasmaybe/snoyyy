@@ -45,12 +45,22 @@ object AiAgent {
             return
         }
         try {
-            val transcript = transcribe(s.groqKey, File(rec.path))
+            val diarized = s.deepgramKey.isNotBlank()
+            var transcript = if (diarized) transcribeDiarized(s.deepgramKey, File(rec.path))
+                             else transcribe(s.groqKey, File(rec.path))
             rec = rec.copy(transcript = transcript)
             Repository.upsert(rec)
             if (transcript.isNotBlank()) {
-                val j = summarize(s.groqKey, transcript)
+                val memory = Repository.items.value.filter { it.id != rec.id && it.summary != null }.take(10)
+                    .joinToString("\n") { "- ${it.title}: ${it.summary} People: ${it.people.joinToString()}" }
+                val j = summarize(s.groqKey, transcript, memory, diarized)
+                // Replace "Speaker N" with the names the model could infer from context.
+                j.optJSONObject("speakers")?.let { m ->
+                    m.keys().forEach { k -> val n = m.optString(k); if (n.isNotBlank() && !n.startsWith("Speaker")) transcript = transcript.replace("$k:", "$n:") }
+                }
                 rec = rec.copy(
+                    transcript = transcript,
+                    people = j.optJSONObject("speakers")?.let { m -> m.keys().asSequence().map { k -> k + " = " + m.optString(k) }.toList() } ?: emptyList(),
                     title = j.optString("title").ifBlank { rec.title },
                     summary = j.optString("summary").ifBlank { null },
                     actionItems = j.optJSONArray("action_items")?.let { a -> List(a.length()) { a.getString(it) } } ?: emptyList(),
@@ -98,15 +108,43 @@ object AiAgent {
         }
     }
 
-    private fun summarize(key: String, transcript: String): JSONObject {
+    private fun summarize(key: String, transcript: String, memory: String, diarized: Boolean): JSONObject {
         val out = chat(
             key,
-            "You are the intelligence inside a voice recorder. Reply ONLY with a JSON object with keys: " +
-                "title (max 6 words), summary (2-3 sentences), action_items (array of short strings), " +
-                "tags (array of up to 4 lowercase words).",
-            transcript.take(24000), true
+            "You are the intelligence inside a voice recorder. Understand context and references: resolve pronouns " +
+                "and phrases like 'he', 'that demo', 'the client' using the transcript and the user's earlier recordings. " +
+                (if (diarized) "The transcript is labelled Speaker 0, Speaker 1... Infer who each speaker is from how they address " +
+                    "each other and introduce themselves; use a name only if the evidence is clear, otherwise a role or 'Unknown'. " else "") +
+                "Reply ONLY with a JSON object with keys: title (max 6 words), summary (2-3 sentences with references resolved), " +
+                "action_items (array of short strings, each naming the owner if known), tags (array of up to 4 lowercase words)" +
+                (if (diarized) ", speakers (object mapping label like \"Speaker 0\" to a name or role)." else "."),
+            "Earlier recordings (memory):\n" + memory.ifBlank { "(none)" } + "\n\nTranscript:\n" + transcript.take(24000), true
         )
         return JSONObject(out)
+    }
+
+    /** Deepgram nova-3 with speaker diarization; falls back to plain text if no utterances. */
+    private fun transcribeDiarized(key: String, f: File): String {
+        val req = Request.Builder()
+            .url("https://api.deepgram.com/v1/listen?model=nova-3&diarize=true&utterances=true&smart_format=true&detect_language=true")
+            .header("Authorization", "Token $key")
+            .post(f.asRequestBody("audio/mp4".toMediaType())).build()
+        http.newCall(req).execute().use { r ->
+            val txt = r.body?.string().orEmpty()
+            if (!r.isSuccessful) error("Speakers ${r.code}: " + txt.take(80))
+            val res = JSONObject(txt).getJSONObject("results")
+            val u = res.optJSONArray("utterances")
+            if (u == null || u.length() == 0)
+                return res.getJSONArray("channels").getJSONObject(0).getJSONArray("alternatives")
+                    .getJSONObject(0).optString("transcript")
+            val sb = StringBuilder(); var last = -1
+            for (i in 0 until u.length()) {
+                val o = u.getJSONObject(i); val sp = o.optInt("speaker", 0)
+                if (sp != last) { if (sb.isNotEmpty()) sb.append("\n"); sb.append("Speaker $sp: "); last = sp } else sb.append(' ')
+                sb.append(o.optString("transcript"))
+            }
+            return sb.toString()
+        }
     }
 
     /** Ask your past self: answers grounded only in your recordings. */

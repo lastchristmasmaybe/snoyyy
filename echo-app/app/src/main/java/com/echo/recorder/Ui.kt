@@ -336,6 +336,7 @@ fun RecordingCard(r: Recording) {
                     r.actionItems.forEach { Text("• $it") }
                     Spacer(Modifier.height(8.dp))
                 }
+                if (r.people.isNotEmpty()) { Text("People", color = TextDim, fontSize = 12.sp); r.people.forEach { Text("🗣 $it") }; Spacer(Modifier.height(8.dp)) }
                 r.transcript?.let { Text("Transcript", color = TextDim, fontSize = 12.sp); Text(it, fontSize = 13.sp); Spacer(Modifier.height(8.dp)) }
                 if (r.bookmarks.isNotEmpty())
                     Text("Bookmarks: " + r.bookmarks.joinToString { RecorderService.fmt(it) }, color = TextDim, fontSize = 12.sp)
@@ -382,6 +383,15 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
         }
         item {
             OutlinedTextField(groq, { groq = it; s.groqKey = it }, label = { Text("Groq API key") },
+                singleLine = true, visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+        }
+        item {
+            var dg by remember { mutableStateOf(s.deepgramKey) }
+            Text("Who said what", fontWeight = FontWeight.SemiBold)
+            Text("Optional free Deepgram key (deepgram.com) separates speakers. Echo then names them from context.", color = TextDim, fontSize = 12.sp)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(dg, { dg = it; s.deepgramKey = it }, label = { Text("Deepgram API key") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
         }
