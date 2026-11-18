@@ -1,0 +1,46 @@
+name: Build & Release Echo APK
+
+on:
+  push:
+    branches: [main, "ccr-*"]
+    paths: ["echo-app/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: echo-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Accept SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+      - name: Build release APK
+        run: gradle assembleRelease -PversionCode=${{ github.run_number }} --no-daemon
+      - name: Name the APK
+        run: cp app/build/outputs/apk/release/app-release.apk Echo.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Echo-apk
+          path: echo-app/Echo.apk
+      # Every merge to main publishes a rolling "latest" release; the app checks it for updates.
+      - name: Publish rolling release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Echo (latest)
+          body: "build-${{ github.run_number }}"
+          files: echo-app/Echo.apk
+          make_latest: true
