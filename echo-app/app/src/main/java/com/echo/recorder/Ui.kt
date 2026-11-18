@@ -41,7 +41,14 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -644,28 +651,141 @@ fun AiStatusIcon(status: String) {
 
 // ───────────────────────── Ask ─────────────────────────
 
+private data class Msg(val fromUser: Boolean, val text: String, val failed: Boolean = false)
+
+/** Renders the little bit of markdown models love to emit (**bold**, "- " bullets, # headings) as clean text. */
+private fun md(raw: String): AnnotatedString {
+    val text = raw.replace("\r", "").replace(Regex("【[^】]*】"), "").trim()
+    val lines = text.split('\n')
+    return buildAnnotatedString {
+        lines.forEachIndexed { idx, l ->
+            var line = l.trimEnd()
+            val heading = line.trimStart().startsWith("#")
+            line = line.trimStart('#', ' ')
+            if (line.trimStart().startsWith("- ") || line.trimStart().startsWith("* ")) line = "•  " + line.trimStart().drop(2)
+            if (heading) pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
+            var i = 0
+            while (i < line.length) {
+                if (line.startsWith("**", i)) {
+                    val end = line.indexOf("**", i + 2)
+                    if (end > 0) {
+                        pushStyle(SpanStyle(fontWeight = FontWeight.Bold)); append(line.substring(i + 2, end)); pop()
+                        i = end + 2; continue
+                    }
+                }
+                append(line[i]); i++
+            }
+            if (heading) pop()
+            if (idx < lines.lastIndex) append('\n')
+        }
+    }
+}
+
 @Composable
 fun AskScreen() {
     val ctx = LocalContext.current
     val items by Repository.items.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    val msgs = remember { mutableStateListOf<Msg>() }
     var q by remember { mutableStateOf("") }
-    var answer by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize()) {
-        PageTitle("Ask your past self.", "Answers grounded in what you recorded.")
-        Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 4.dp)) {
-            if (busy) CircularProgressIndicator(color = Plum)
-            else Text(
-                answer.ifEmpty { "Ask anything about what you have recorded.\nExample: \"what did Rohan want from me?\"" },
-                fontFamily = Serif, fontSize = 22.sp, lineHeight = 30.sp,
-                color = if (answer.isEmpty()) TextDim else Ink,
-            )
+    val listState = rememberLazyListState()
+    val clipboard = LocalClipboardManager.current
+
+    fun send(text: String) {
+        val question = text.trim()
+        if (question.isEmpty() || busy) return
+        val history = msgs.takeLast(6).joinToString("\n") { (if (it.fromUser) "User: " else "Echo: ") + it.text.take(600) }
+        msgs.add(Msg(true, question)); q = ""
+        val key = Settings(ctx).groqKey
+        if (key.isBlank()) { msgs.add(Msg(false, "Add your free Groq key in Settings first, then ask me again.", true)); return }
+        busy = true
+        scope.launch {
+            val res = runCatching { withContext(Dispatchers.IO) { AiAgent.ask(key, question, items, history) } }
+            val ans = res.getOrElse { "I couldn't reach the AI: " + (it.message ?: "error") }
+            msgs.add(Msg(false, ans, res.isFailure))
+            busy = false
+            val st = Settings(ctx)
+            if (!res.isFailure && st.speakAnswers) Voice.speak(ctx, md(ans).text, st.speechRate)
         }
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 12.dp)) {
+    }
+    LaunchedEffect(msgs.size, busy) {
+        val count = msgs.size + (if (busy) 1 else 0)
+        if (count > 0) listState.animateScrollToItem(count - 1)
+    }
+
+    val people = items.flatMap { it.people }.map { it.substringAfter("= ", "") }.filter { it.isNotBlank() && !it.startsWith("Voice") }.distinct()
+    val starters = buildList {
+        add("What are my open action items?")
+        add("Summarise my latest recording")
+        add("What did I decide recently?")
+        people.firstOrNull()?.let { add("What did $it want from me?") }
+    }
+
+    Column(Modifier.fillMaxSize().imePadding()) {
+        PageTitle("Ask your past self.", "Answers grounded in what you recorded.")
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (msgs.isEmpty()) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Try asking", color = TextDim, fontSize = 13.sp, letterSpacing = 1.sp)
+                    starters.forEach { st ->
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(CreamCard)
+                                .border(1.dp, Hairline, RoundedCornerShape(18.dp)).clickable { send(st) }.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, null, tint = Violet, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Text(st, color = Ink, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                        }
+                    }
+                    if (items.none { !it.transcript.isNullOrBlank() })
+                        Text("No transcripts yet. Record something with your Groq key set and I'll be able to answer.", color = TextDim, fontSize = 13.sp)
+                }
+            } else {
+                LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 8.dp)) {
+                    items(msgs.size) { i ->
+                        val m = msgs[i]
+                        if (m.fromUser) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                Text(
+                                    m.text, color = Cream, fontSize = 16.sp,
+                                    modifier = Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp))
+                                        .background(Ink).padding(horizontal = 14.dp, vertical = 10.dp),
+                                )
+                            }
+                        } else {
+                            Column(
+                                Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp)).background(CreamCard)
+                                    .border(1.dp, if (m.failed) RecRed.copy(alpha = 0.5f) else Hairline, RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp))
+                                    .padding(16.dp),
+                            ) {
+                                androidx.compose.foundation.text.selection.SelectionContainer {
+                                    Text(md(m.text), color = if (m.failed) RecRed else Ink, fontSize = 16.sp, lineHeight = 24.sp)
+                                }
+                                if (!m.failed) {
+                                    Spacer(Modifier.height(10.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Pill("Copy") { clipboard.setText(AnnotatedString(md(m.text).text)) }
+                                        Pill("Speak") { Voice.speak(ctx, md(m.text).text, Settings(ctx).speechRate) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (busy) item {
+                        val a by rememberInfiniteTransition(label = "think").animateFloat(0.35f, 1f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "a")
+                        Text("Reading your memories…", color = TextDim, fontSize = 14.sp, modifier = Modifier.alpha(a).padding(start = 4.dp))
+                    }
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)) {
             OutlinedTextField(
                 q, { q = it }, placeholder = { Text("Ask your brain anything…") },
-                modifier = Modifier.weight(1f), singleLine = true, shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.weight(1f), maxLines = 4, shape = RoundedCornerShape(20.dp),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { send(q) }),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedContainerColor = CreamCard, unfocusedContainerColor = CreamCard,
                     focusedBorderColor = Ink, unfocusedBorderColor = Hairline, cursorColor = Ink,
@@ -673,20 +793,9 @@ fun AskScreen() {
             )
             Spacer(Modifier.width(10.dp))
             Button(
-                onClick = {
-                    val key = Settings(ctx).groqKey
-                    if (key.isBlank()) { answer = "Add your free Groq key in Settings first."; return@Button }
-                    busy = true
-                    scope.launch {
-                        answer = runCatching { withContext(Dispatchers.IO) { AiAgent.ask(key, q, items) } }
-                            .getOrElse { "Couldn't reach AI: " + (it.message ?: "error") }
-                        busy = false
-                        val st = Settings(ctx)
-                        if (st.speakAnswers) Voice.speak(ctx, answer, st.speechRate)
-                    }
-                },
-                shape = RoundedCornerShape(16.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Violet),
+                onClick = { send(q) }, enabled = !busy && q.isNotBlank(),
+                shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 17.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Violet, disabledContainerColor = NavPill),
             ) { Text("Ask", fontWeight = FontWeight.SemiBold) }
         }
     }

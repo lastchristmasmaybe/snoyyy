@@ -315,17 +315,27 @@ object AiAgent {
 
     fun test(key: String): String { chat(key, "Reply with the single word OK.", "ping", false); return "Connected ✓ · " + chatModel }
 
-    /** Ask your past self: answers grounded only in your recordings. */
-    fun ask(key: String, question: String, items: List<Recording>): String {
-        val ctx = items.filter { !it.transcript.isNullOrBlank() }.take(15).joinToString("\n\n") {
-            "[" + java.text.SimpleDateFormat("d MMM h:mm a", java.util.Locale.getDefault()).format(java.util.Date(it.createdAt)) +
-                " · ${it.title}]\n" + (it.summary ?: "") + "\n" + it.keyPoints.joinToString("\n") { k -> "- $k" } + "\n" + it.transcript!!.take(4000)
+    /** Ask your past self: answers grounded only in your recordings, with short follow-up memory. */
+    fun ask(key: String, question: String, items: List<Recording>, history: String = ""): String {
+        val fmt = java.text.SimpleDateFormat("EEE d MMM yyyy, h:mm a", java.util.Locale.getDefault())
+        val ctx = items.filter { !it.transcript.isNullOrBlank() }.take(15).joinToString("\n\n") { r ->
+            "RECORDING \"${r.title}\" (${fmt.format(java.util.Date(r.createdAt))})\n" +
+                (r.summary?.let { "Summary: $it\n" } ?: "") +
+                (if (r.keyPoints.isNotEmpty()) "Key points:\n" + r.keyPoints.joinToString("\n") { "- $it" } + "\n" else "") +
+                (if (r.decisions.isNotEmpty()) "Decisions:\n" + r.decisions.joinToString("\n") { "- $it" } + "\n" else "") +
+                (if (r.actionItems.isNotEmpty()) "Action items:\n" + r.actionItems.joinToString("\n") { "- $it" } + "\n" else "") +
+                "Transcript:\n" + r.transcript!!.take(3500)
         }
-        if (ctx.isBlank()) return "No transcripts yet. Record something with AI enabled first."
+        if (ctx.isBlank()) return "I don't have any transcripts yet. Record something with your Groq key set, and ask me again."
         return chat(
             key,
-            "Answer the question using ONLY the user's recordings below. Be accurate and complete; cite the recording and time. If the answer isn't there, say so.",
-            "Recordings:\n$ctx\n\nQuestion: $question", false
+            "You are Echo, the user's second brain. Answer ONLY from the user's recordings below; if the answer isn't there, say so plainly. " +
+                "Be accurate and complete but concise. Write plain conversational text: NO markdown symbols (no ** or #), " +
+                "no bracketed citations. Use short paragraphs, or simple lines starting with '- ' for lists. " +
+                "When useful, mention the recording title and time in normal words, e.g. (Status update, 1:18 pm). " +
+                "Today is ${fmt.format(java.util.Date())}.",
+            (if (history.isNotBlank()) "Conversation so far:\n$history\n\n" else "") +
+                "Recordings:\n$ctx\n\nQuestion: $question", false
         )
     }
 
