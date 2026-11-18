@@ -33,7 +33,7 @@ class TranscriptToolsTest {
     }
 
     @Test fun trimOverlapKeepsGenuinelyNewWords() {
-        assertEquals("and then we left", TranscriptTools.trimOverlap("so we met at noon", "at noon and then we left").let { it.replaceFirst("^at noon ".toRegex(), "") }.ifEmpty { it })
+        assertEquals("and then we left", TranscriptTools.trimOverlap("so we met at noon", "at noon and then we left"))
         assertEquals("brand new sentence", TranscriptTools.trimOverlap("totally different words", "brand new sentence"))
     }
 
