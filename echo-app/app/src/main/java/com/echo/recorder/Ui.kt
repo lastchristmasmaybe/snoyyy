@@ -54,14 +54,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val Serif = FontFamily.Serif
+private val Serif = FontFamily.SansSerif
 
 @Composable
 private fun Wordmark(count: Int) {
     Row(Modifier.fillMaxWidth().padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Default.GraphicEq, null, tint = Ink, modifier = Modifier.size(30.dp))
         Spacer(Modifier.width(8.dp))
-        Text("echo", fontFamily = Serif, fontSize = 34.sp, color = Ink)
+        Text("echo", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 32.sp, letterSpacing = (-1).sp, color = Ink)
         Spacer(Modifier.weight(1f))
         Text("$count memories", color = TextDim, fontSize = 14.sp)
     }
@@ -70,7 +70,7 @@ private fun Wordmark(count: Int) {
 @Composable
 private fun PageTitle(title: String, sub: String) {
     Spacer(Modifier.height(14.dp))
-    Text(title, fontFamily = Serif, fontSize = 32.sp, color = Ink)
+    Text(title, fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 30.sp, letterSpacing = (-1).sp, color = Ink)
     Text(sub, color = TextDim, fontSize = 14.sp)
     Spacer(Modifier.height(14.dp))
 }
@@ -147,32 +147,47 @@ fun EchoRoot() {
 
 @Composable
 private fun HeroCard() {
-    Box(Modifier.fillMaxWidth().height(190.dp).clip(RoundedCornerShape(28.dp)).background(Hero)) {
+    Box(Modifier.fillMaxWidth().height(190.dp).clip(RoundedCornerShape(28.dp))
+        .background(Brush.verticalGradient(listOf(HeroTop, Hero)))) {
         Canvas(Modifier.matchParentSize()) {
             val w = size.width; val h = size.height
-            // pale diagonal band (sky / water)
-            val band = Path().apply {
-                moveTo(0f, h * 0.74f); lineTo(w, h * 0.30f); lineTo(w, h); lineTo(0f, h); close()
+            // electric-purple glow rising from the bottom
+            drawRect(Brush.radialGradient(
+                listOf(Violet.copy(alpha = 0.75f), Violet.copy(alpha = 0.18f), Color.Transparent),
+                Offset(w * 0.78f, h * 1.05f), w * 0.8f))
+            // fine dot grid
+            val step = 18.dp.toPx()
+            var y = step / 2
+            while (y < h) {
+                var x = step / 2
+                while (x < w) { drawCircle(Color.White.copy(alpha = 0.07f), 1.2f, Offset(x, y)); x += step }
+                y += step
             }
-            drawPath(band, Brush.linearGradient(listOf(Sage.copy(alpha = 0.95f), Color(0xFF6E9487)), Offset(0f, 0f), Offset(w, h)))
-            // olive hill
-            val hill = Path().apply {
-                moveTo(0f, h * 0.80f)
-                quadraticBezierTo(w * 0.45f, h * 0.60f, w, h * 0.92f)
-                lineTo(w, h); lineTo(0f, h); close()
-            }
-            drawPath(hill, Brush.radialGradient(listOf(Color(0xFFB4C84C), Color(0xFF6F8F2E)), Offset(w * 0.5f, h * 0.85f), w * 0.7f))
-            // grass ticks
-            var x = w * 0.03f
-            while (x < w) {
-                drawLine(Color(0x555A7A22), Offset(x, h * 0.92f), Offset(x + 4f, h), 2f)
-                x += w / 26f
-            }
+            // sparkle badge
+            drawCircle(Violet, 14.dp.toPx(), Offset(w - 36.dp.toPx(), 36.dp.toPx()))
+            drawCircle(Color.White, 4.dp.toPx(), Offset(w - 36.dp.toPx(), 36.dp.toPx()))
         }
         Column(Modifier.padding(22.dp)) {
-            Text("ROOM FOR YOUR THOUGHTS", color = Cream.copy(alpha = 0.85f), fontSize = 12.sp, letterSpacing = 2.sp)
+            Text("ROOM FOR YOUR THOUGHTS", color = NavPill.copy(alpha = 0.9f), fontSize = 12.sp, letterSpacing = 2.sp)
             Spacer(Modifier.height(12.dp))
-            Text("A little less\nto carry.", color = Color.White, fontFamily = Serif, fontSize = 32.sp, lineHeight = 36.sp)
+            Text("A little less\nto carry.", color = Color.White, fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 36.sp, lineHeight = 38.sp, letterSpacing = (-1.5).sp)
+        }
+    }
+}
+
+/** Purple gauge card (reference style): share of memories the AI has fully processed. */
+@Composable
+private fun GaugeCard(percent: Int, modifier: Modifier = Modifier) {
+    Box(modifier.height(150.dp).clip(RoundedCornerShape(24.dp))
+        .background(Brush.verticalGradient(listOf(Violet, Color(0xFF6D3FD6)))), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(110.dp)) {
+            val st = Stroke(width = 12.dp.toPx(), cap = StrokeCap.Round)
+            drawArc(Color.White.copy(alpha = 0.25f), 150f, 240f, false, style = st)
+            drawArc(Color.White, 150f, 240f * percent / 100f, false, style = st)
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("$percent", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
+            Text("memory health", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
         }
     }
 }
@@ -206,7 +221,7 @@ fun HomeScreen() {
             )
             Text(
                 RecorderService.fmt(ui.elapsedMs),
-                fontFamily = Serif, fontSize = 52.sp, color = Ink,
+                fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 52.sp, letterSpacing = (-1).sp, color = Ink,
             )
             Waveform(ui.levels, active, Modifier.fillMaxWidth().height(if (active) 64.dp else 12.dp))
             Spacer(Modifier.height(8.dp))
@@ -232,6 +247,22 @@ fun HomeScreen() {
                 color = TextDim, fontSize = 14.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
             Spacer(Modifier.height(22.dp))
+        }
+        item {
+            val done = items.count { it.aiStatus == "done" }
+            val pct = if (items.isEmpty()) 0 else done * 100 / items.size
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                GaugeCard(pct, Modifier.weight(1f))
+                Column(
+                    Modifier.weight(1f).height(150.dp).clip(RoundedCornerShape(24.dp)).background(NavPill).padding(16.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("Captured", color = TextDim, fontSize = 13.sp)
+                    Text("${items.sumOf { it.durationMs } / 60000}", color = Ink, fontSize = 40.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
+                    Text("minutes · ${items.size} memories", color = TextDim, fontSize = 13.sp)
+                }
+            }
+            Spacer(Modifier.height(18.dp))
         }
         item {
             Text("Smart suggestions", color = TextDim, fontSize = 13.sp, letterSpacing = 1.sp, modifier = Modifier.fillMaxWidth())
@@ -392,7 +423,7 @@ fun RecordingCard(r: Recording) {
             Text(RecorderService.fmt(r.durationMs), color = TextDim, fontSize = 13.sp)
         }
         Spacer(Modifier.height(6.dp))
-        Text(r.title, color = Ink, fontSize = 17.sp, fontFamily = Serif, maxLines = if (open) 6 else 2)
+        Text(r.title, color = Ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, fontFamily = Serif, maxLines = if (open) 6 else 2)
         r.summary?.let { Text(it, color = TextDim, fontSize = 14.sp, maxLines = if (open) 12 else 2, modifier = Modifier.padding(top = 4.dp)) }
         if (r.tags.isNotEmpty()) {
             Spacer(Modifier.height(10.dp))
@@ -497,7 +528,7 @@ fun AskScreen() {
                     }
                 },
                 shape = RoundedCornerShape(16.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Plum),
+                colors = ButtonDefaults.buttonColors(containerColor = Violet),
             ) { Text("Ask", fontWeight = FontWeight.SemiBold) }
         }
     }
@@ -535,7 +566,7 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = { s.groqKey = groq; msg = "Key saved" },
-                    shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = Plum)) { Text("Save key") }
+                    shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = Violet)) { Text("Save key") }
                 Pill("Test") {
                     s.groqKey = groq; msg = "Testing…"
                     scope.launch {
