@@ -28,7 +28,7 @@ object NotificationWave {
         }
         val data = levels.takeLast(bars)
         val spk = speakers.takeLast(bars)
-        val cols = intArrayOf(Color.parseColor("#2F7BFF"), Color.parseColor("#FF8A3D"), Color.parseColor("#12B886"))
+        val cols = intArrayOf(Color.parseColor("#4DA3FF"), Color.parseColor("#FF9A3D"), Color.parseColor("#2EC98A"))
         val flat = Paint(Paint.ANTI_ALIAS_FLAG)
         val offset = bars - data.size
         for (i in 0 until bars) {

@@ -14,6 +14,7 @@ android {
         // CI passes -PversionCode=<run number> so every build is an upgrade.
         versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 1
         versionName = "1.0.$versionCode"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -43,6 +44,7 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions { unitTests.isReturnDefaultValues = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 }
 
@@ -58,4 +60,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("androidx.test:rules:1.5.0")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
 }

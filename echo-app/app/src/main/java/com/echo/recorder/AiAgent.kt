@@ -14,8 +14,8 @@ import java.io.File
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
-fun CoroutineScope.launchAi(ctx: Context, id: String) {
-    launch { AiAgent.process(ctx, id) }
+fun CoroutineScope.launchAi(ctx: Context, id: String, manual: Boolean = false) {
+    launch { AiAgent.process(ctx, id, manual) }
 }
 
 data class Insight(val emoji: String, val title: String, val body: String)
@@ -32,7 +32,7 @@ object AiAgent {
         .writeTimeout(180, TimeUnit.SECONDS)
         .build()
 
-    fun process(ctx: Context, id: String) {
+    fun process(ctx: Context, id: String, manual: Boolean = false) {
         var rec = Repository.get(id) ?: return
         val s = Settings(ctx)
 
@@ -40,7 +40,7 @@ object AiAgent {
         rec = rec.copy(tags = localTags(rec), aiStatus = "working")
         Repository.upsert(rec)
 
-        if (s.groqKey.isBlank()) {
+        if (s.groqKey.isBlank() || (!s.autoTranscribe && !manual)) {
             Repository.upsert(rec.copy(aiStatus = "local"))
             return
         }
@@ -87,9 +87,13 @@ object AiAgent {
 
     private const val GROQ = "https://api.groq.com/openai/v1"
 
-    private fun transcribe(key: String, f: File): String {
+    private fun transcribe(key: String, f: File): String =
+        runCatching { transcribeWith("whisper-large-v3-turbo", key, f) }
+            .getOrElse { transcribeWith("whisper-large-v3", key, f) }
+
+    private fun transcribeWith(model: String, key: String, f: File): String {
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-            .addFormDataPart("model", "whisper-large-v3-turbo")
+            .addFormDataPart("model", model)
             .addFormDataPart("file", f.name, f.asRequestBody("audio/mp4".toMediaType()))
             .build()
         val req = Request.Builder().url("$GROQ/audio/transcriptions")
@@ -101,22 +105,60 @@ object AiAgent {
         }
     }
 
+    @Volatile private var chatModel: String? = null
+
+    /** Ask Groq which models this account can use, instead of hard-coding one that may be retired. */
+    private fun resolveModel(key: String): String {
+        chatModel?.let { return it }
+        val req = Request.Builder().url("$GROQ/models").header("Authorization", "Bearer $key").build()
+        val ids = runCatching {
+            execRetry(req).use { r ->
+                if (!r.isSuccessful) emptyList() else {
+                    val a = JSONObject(r.body!!.string()).getJSONArray("data")
+                    (0 until a.length()).map { a.getJSONObject(it) }
+                        .filter { it.optBoolean("active", true) }.map { it.getString("id") }
+                }
+            }
+        }.getOrDefault(emptyList())
+        val prefer = listOf(
+            "llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b",
+            "llama-3.1-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3-32b",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+        )
+        val skip = listOf("whisper", "guard", "tts", "orpheus", "embed", "playai", "safeguard")
+        val m = prefer.firstOrNull { it in ids }
+            ?: ids.firstOrNull { id -> skip.none { id.contains(it) } }
+            ?: "llama-3.1-8b-instant"
+        chatModel = m
+        return m
+    }
+
     private fun chat(key: String, system: String, user: String, json: Boolean): String {
-        val payload = JSONObject()
-            .put("model", "llama-3.3-70b-versatile")
-            .put("temperature", 0.3)
-            .put("messages", org.json.JSONArray()
-                .put(JSONObject().put("role", "system").put("content", system))
-                .put(JSONObject().put("role", "user").put("content", user)))
-        if (json) payload.put("response_format", JSONObject().put("type", "json_object"))
-        val req = Request.Builder().url("$GROQ/chat/completions")
-            .header("Authorization", "Bearer $key")
-            .post(payload.toString().toRequestBody("application/json".toMediaType())).build()
-        execRetry(req).use { r ->
-            val txt = r.body?.string().orEmpty()
-            if (!r.isSuccessful) error(if (r.code == 429) "Free limit reached, tap Run AI again later" else "AI ${r.code}: " + txt.take(80))
-            return JSONObject(txt).getJSONArray("choices").getJSONObject(0)
-                .getJSONObject("message").getString("content")
+        var useJson = json
+        var attempt = 0
+        while (true) {
+            val payload = JSONObject()
+                .put("model", resolveModel(key))
+                .put("temperature", 0.3)
+                .put("messages", org.json.JSONArray()
+                    .put(JSONObject().put("role", "system").put("content", system))
+                    .put(JSONObject().put("role", "user").put("content", user)))
+            if (useJson) payload.put("response_format", JSONObject().put("type", "json_object"))
+            val req = Request.Builder().url("$GROQ/chat/completions")
+                .header("Authorization", "Bearer $key")
+                .post(payload.toString().toRequestBody("application/json".toMediaType())).build()
+            execRetry(req).use { r ->
+                val txt = r.body?.string().orEmpty()
+                if (r.isSuccessful) return JSONObject(txt).getJSONArray("choices").getJSONObject(0)
+                    .getJSONObject("message").getString("content")
+                attempt++
+                when {
+                    r.code == 429 -> error("Free limit reached, tap Run AI again later")
+                    (r.code == 404 || txt.contains("model")) && attempt == 1 -> chatModel = null   // re-pick a model
+                    r.code == 400 && useJson && attempt <= 2 -> useJson = false                   // model lacks JSON mode
+                    else -> error("AI ${r.code}: " + txt.take(100))
+                }
+            }
         }
     }
 
@@ -135,7 +177,7 @@ object AiAgent {
         return JSONObject(out)
     }
 
-    fun test(key: String): String = chat(key, "Reply with the single word OK.", "ping", false)
+    fun test(key: String): String { chat(key, "Reply with the single word OK.", "ping", false); return "Connected ✓ · " + chatModel }
 
     /** Ask your past self: answers grounded only in your recordings. */
     fun ask(key: String, question: String, items: List<Recording>): String {
