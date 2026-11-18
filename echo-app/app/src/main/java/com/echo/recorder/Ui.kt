@@ -98,6 +98,7 @@ fun EchoRoot() {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var progress by remember { mutableStateOf(-1) }
+    var memoryQuery by remember { mutableStateOf("") }
     val items by Repository.items.collectAsStateWithLifecycle()
 
     val onSea = tab == 0
@@ -164,8 +165,8 @@ fun EchoRoot() {
                 Wordmark(items.size, onSea)
                 when (tab) {
                     0 -> HomeScreen { tab = it }
-                    1 -> MemoriesScreen()
-                    2 -> AskScreen()
+                    1 -> MemoriesScreen(memoryQuery)
+                    2 -> AskScreen(onGo = { tab = it }, onOpen = { memoryQuery = it; tab = 1 })
                     else -> SettingsScreen { update = it }
                 }
             }
@@ -495,9 +496,9 @@ fun InsightCard(i: Insight) {
 // ───────────────────────── Memories ─────────────────────────
 
 @Composable
-fun MemoriesScreen() {
+fun MemoriesScreen(initialQuery: String = "") {
     val items by Repository.items.collectAsStateWithLifecycle()
-    var query by remember { mutableStateOf("") }
+    var query by remember(initialQuery) { mutableStateOf(initialQuery) }
     val shown = remember(items, query) {
         if (query.isBlank()) items
         else items.filter {
@@ -651,8 +652,6 @@ fun AiStatusIcon(status: String) {
 
 // ───────────────────────── Ask ─────────────────────────
 
-private data class Msg(val fromUser: Boolean, val text: String, val failed: Boolean = false)
-
 /** Renders the little bit of markdown models love to emit (**bold**, "- " bullets, # headings) as clean text. */
 private fun md(raw: String): AnnotatedString {
     val text = raw.replace("\r", "").replace(Regex("【[^】]*】"), "").trim()
@@ -682,50 +681,134 @@ private fun md(raw: String): AnnotatedString {
 }
 
 @Composable
-fun AskScreen() {
+private fun AnswerBubble(t: Turn, fresh: Boolean, isLast: Boolean, onFollow: (String) -> Unit, onOpen: (String) -> Unit) {
+    val ctx = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val full = remember(t.text) { md(t.text) }
+    var shown by remember(t.text) { mutableIntStateOf(if (fresh) 0 else full.length) }
+    LaunchedEffect(t.text, fresh) {
+        if (fresh) while (shown < full.length) { shown = minOf(full.length, shown + 5); kotlinx.coroutines.delay(14) }
+    }
+    var expanded by remember(t.text) { mutableStateOf(false) }
+    val long = full.length > 650
+    val typing = shown < full.length
+    val shape = RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp)
+    Column(
+        Modifier.fillMaxWidth().clip(shape).background(CreamCard)
+            .border(1.dp, if (t.failed) RecRed.copy(alpha = 0.5f) else Hairline, shape)
+            .clickable(enabled = typing) { shown = full.length }.padding(16.dp),
+    ) {
+        androidx.compose.foundation.text.selection.SelectionContainer {
+            Text(
+                full.subSequence(0, minOf(shown, full.length)),
+                color = if (t.failed) RecRed else Ink, fontSize = 16.sp, lineHeight = 24.sp,
+                maxLines = if (long && !expanded && !typing) 9 else Int.MAX_VALUE,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+        if (!typing && !t.failed) {
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (long) Pill(if (expanded) "Show less" else "Show more") { expanded = !expanded }
+                Pill("Copy") { clipboard.setText(AnnotatedString(full.text)); Haptics.tick(ctx) }
+                Pill("Speak") { Voice.speak(ctx, full.text, Settings(ctx).speechRate) }
+            }
+            if (t.sources.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text("FROM YOUR MEMORIES", color = TextDim, fontSize = 11.sp, letterSpacing = 1.5.sp)
+                Spacer(Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(t.sources) { src ->
+                        Text(
+                            "📍 " + src.title.take(26) + (if (src.stamp.isNotEmpty()) " · ${src.stamp}" else ""),
+                            color = Plum, fontSize = 13.sp,
+                            modifier = Modifier.clip(RoundedCornerShape(50)).background(NavPill)
+                                .clickable { Haptics.tick(ctx); onOpen(src.title) }.padding(horizontal = 12.dp, vertical = 7.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+    if (isLast && !typing && t.followUps.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(t.followUps) { f ->
+                Text(
+                    f, color = Ink, fontSize = 14.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).border(1.dp, Ink.copy(alpha = 0.35f), RoundedCornerShape(50))
+                        .clickable { onFollow(f) }.padding(horizontal = 14.dp, vertical = 9.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun AskScreen(onGo: (Int) -> Unit = {}, onOpen: (String) -> Unit = {}) {
     val ctx = LocalContext.current
     val items by Repository.items.collectAsStateWithLifecycle()
+    val turns by ChatStore.turns.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
-    val msgs = remember { mutableStateListOf<Msg>() }
     var q by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var freshIndex by remember { mutableIntStateOf(-1) }
     val listState = rememberLazyListState()
-    val clipboard = LocalClipboardManager.current
+    val inMind = items.count { !it.transcript.isNullOrBlank() || it.summary != null }
 
     fun send(text: String) {
         val question = text.trim()
         if (question.isEmpty() || busy) return
-        val history = msgs.takeLast(6).joinToString("\n") { (if (it.fromUser) "User: " else "Echo: ") + it.text.take(600) }
-        msgs.add(Msg(true, question)); q = ""
+        Haptics.tick(ctx)
+        val history = turns.takeLast(8).joinToString("\n") { (if (it.fromUser) "User: " else "Echo: ") + it.text.take(500) }
+        ChatStore.add(Turn(true, question)); q = ""
         val key = Settings(ctx).groqKey
-        if (key.isBlank()) { msgs.add(Msg(false, "Add your free Groq key in Settings first, then ask me again.", true)); return }
+        if (key.isBlank()) { ChatStore.add(Turn(false, "Add your free Groq key in Settings first, then ask me again.", failed = true)); return }
         busy = true
         scope.launch {
-            val res = runCatching { withContext(Dispatchers.IO) { AiAgent.ask(key, question, items, history) } }
-            val ans = res.getOrElse { "I couldn't reach the AI: " + (it.message ?: "error") }
-            msgs.add(Msg(false, ans, res.isFailure))
+            val res = runCatching { withContext(Dispatchers.IO) { AiAgent.askSmart(key, question, items, history) } }
+            val ans = res.getOrNull()
+            if (ans != null) {
+                ChatStore.add(Turn(false, ans.text, ans.sources, ans.followUps))
+                freshIndex = ChatStore.turns.value.size - 1
+                Haptics.click(ctx)
+                val st = Settings(ctx)
+                if (st.speakAnswers) Voice.speak(ctx, md(ans.text).text, st.speechRate)
+            } else {
+                ChatStore.add(Turn(false, "I couldn't reach the AI: " + (res.exceptionOrNull()?.message ?: "error"), failed = true))
+            }
             busy = false
-            val st = Settings(ctx)
-            if (!res.isFailure && st.speakAnswers) Voice.speak(ctx, md(ans).text, st.speechRate)
         }
     }
-    LaunchedEffect(msgs.size, busy) {
-        val count = msgs.size + (if (busy) 1 else 0)
+    LaunchedEffect(turns.size, busy) {
+        val count = turns.size + (if (busy) 1 else 0)
         if (count > 0) listState.animateScrollToItem(count - 1)
     }
 
     val people = items.flatMap { it.people }.map { it.substringAfter("= ", "") }.filter { it.isNotBlank() && !it.startsWith("Voice") }.distinct()
+    val latest = items.firstOrNull { it.summary != null }
     val starters = buildList {
-        add("What are my open action items?")
-        add("Summarise my latest recording")
+        if (items.any { it.actionItems.isNotEmpty() }) add("What are my open action items?")
+        latest?.let { add("Summarise \"${it.title.take(40)}\"") }
         add("What did I decide recently?")
+        add("What themes keep coming up?")
         people.firstOrNull()?.let { add("What did $it want from me?") }
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
         PageTitle("Ask your past self.", "Answers grounded in what you recorded.")
+        // compact context bar: what is "in mind", and a clean slate
+        Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "🧠 $inMind ${if (inMind == 1) "memory" else "memories"} in mind" + (if (turns.isNotEmpty()) " · ${turns.count { it.fromUser }} asked" else ""),
+                color = Ink, fontSize = 13.sp,
+                modifier = Modifier.clip(RoundedCornerShape(50)).background(NavPill).padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+            Spacer(Modifier.weight(1f))
+            if (turns.isNotEmpty()) Pill("New chat") { ChatStore.clear(); freshIndex = -1; Haptics.tick(ctx) }
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (msgs.isEmpty()) {
+            if (turns.isEmpty()) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Try asking", color = TextDim, fontSize = 13.sp, letterSpacing = 1.sp)
                     starters.forEach { st ->
@@ -739,13 +822,17 @@ fun AskScreen() {
                             Text(st, color = Ink, fontSize = 15.sp, modifier = Modifier.weight(1f))
                         }
                     }
-                    if (items.none { !it.transcript.isNullOrBlank() })
-                        Text("No transcripts yet. Record something with your Groq key set and I'll be able to answer.", color = TextDim, fontSize = 13.sp)
+                    if (Settings(ctx).groqKey.isBlank()) {
+                        Text("Add your free Groq key in Settings so I can think.", color = Plum, fontSize = 14.sp,
+                            modifier = Modifier.clickable { onGo(3) }.padding(vertical = 6.dp))
+                    } else if (inMind == 0) {
+                        Text("No transcripts yet. Record something and I'll be able to answer.", color = TextDim, fontSize = 13.sp)
+                    }
                 }
             } else {
                 LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 8.dp)) {
-                    items(msgs.size) { i ->
-                        val m = msgs[i]
+                    items(turns.size) { i ->
+                        val m = turns[i]
                         if (m.fromUser) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                                 Text(
@@ -755,27 +842,12 @@ fun AskScreen() {
                                 )
                             }
                         } else {
-                            Column(
-                                Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp)).background(CreamCard)
-                                    .border(1.dp, if (m.failed) RecRed.copy(alpha = 0.5f) else Hairline, RoundedCornerShape(6.dp, 20.dp, 20.dp, 20.dp))
-                                    .padding(16.dp),
-                            ) {
-                                androidx.compose.foundation.text.selection.SelectionContainer {
-                                    Text(md(m.text), color = if (m.failed) RecRed else Ink, fontSize = 16.sp, lineHeight = 24.sp)
-                                }
-                                if (!m.failed) {
-                                    Spacer(Modifier.height(10.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Pill("Copy") { clipboard.setText(AnnotatedString(md(m.text).text)) }
-                                        Pill("Speak") { Voice.speak(ctx, md(m.text).text, Settings(ctx).speechRate) }
-                                    }
-                                }
-                            }
+                            Column { AnswerBubble(m, fresh = i == freshIndex, isLast = i == turns.lastIndex, onFollow = { send(it) }, onOpen = onOpen) }
                         }
                     }
                     if (busy) item {
                         val a by rememberInfiniteTransition(label = "think").animateFloat(0.35f, 1f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "a")
-                        Text("Reading your memories…", color = TextDim, fontSize = 14.sp, modifier = Modifier.alpha(a).padding(start = 4.dp))
+                        Text("Searching your memories…", color = TextDim, fontSize = 14.sp, modifier = Modifier.alpha(a).padding(start = 4.dp))
                     }
                 }
             }

@@ -315,28 +315,86 @@ object AiAgent {
 
     fun test(key: String): String { chat(key, "Reply with the single word OK.", "ping", false); return "Connected ✓ · " + chatModel }
 
-    /** Ask your past self: answers grounded only in your recordings, with short follow-up memory. */
-    fun ask(key: String, question: String, items: List<Recording>, history: String = ""): String {
-        val fmt = java.text.SimpleDateFormat("EEE d MMM yyyy, h:mm a", java.util.Locale.getDefault())
-        val ctx = items.filter { !it.transcript.isNullOrBlank() }.take(15).joinToString("\n\n") { r ->
-            "RECORDING \"${r.title}\" (${fmt.format(java.util.Date(r.createdAt))})\n" +
-                (r.summary?.let { "Summary: $it\n" } ?: "") +
-                (if (r.keyPoints.isNotEmpty()) "Key points:\n" + r.keyPoints.joinToString("\n") { "- $it" } + "\n" else "") +
-                (if (r.decisions.isNotEmpty()) "Decisions:\n" + r.decisions.joinToString("\n") { "- $it" } + "\n" else "") +
-                (if (r.actionItems.isNotEmpty()) "Action items:\n" + r.actionItems.joinToString("\n") { "- $it" } + "\n" else "") +
-                "Transcript:\n" + r.transcript!!.take(3500)
+    class Answer(val text: String, val followUps: List<String>, val sources: List<Source>)
+
+    private fun parseDay(s: String?, endOfDay: Boolean): Long? {
+        if (s.isNullOrBlank()) return null
+        return runCatching {
+            val d = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(s.trim())!!.time
+            if (endOfDay) d + 86_399_999L else d
+        }.getOrNull()
+    }
+
+    /**
+     * Smart Ask: (1) understand the question in the context of the chat (resolve he/that/it, dates, intent),
+     * (2) retrieve only the relevant passages from ALL recordings, (3) answer from those with sources and follow-ups.
+     */
+    fun askSmart(key: String, question: String, items: List<Recording>, history: String): Answer {
+        val usable = items.filter { !it.transcript.isNullOrBlank() || it.summary != null }
+        if (usable.isEmpty()) return Answer("I don't have any memories yet. Record something with your Groq key set, then ask me again.", emptyList(), emptyList())
+        val dayFmt = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.getDefault())
+        val today = dayFmt.format(java.util.Date())
+        val iso = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+
+        // 1) understand
+        val plan = runCatching {
+            parseObj(chat(
+                key,
+                "You turn the user's latest question into a search plan for their voice-recording memory. Today is $today ($iso). " +
+                    "Reply ONLY with JSON: {\"standalone\": the question rewritten to be fully self-contained, resolving he/she/it/that " +
+                    "from the conversation; \"keywords\": [important names, topics, numbers]; " +
+                    "\"intent\": one of lookup|recent|actions|overview; \"from\": YYYY-MM-DD or \"\"; \"to\": YYYY-MM-DD or \"\"}. " +
+                    "intent=recent for 'latest/last/most recent recording'; actions for to-dos, tasks, action items; " +
+                    "overview for broad 'what has been going on / themes / summary of everything'; otherwise lookup. " +
+                    "Set dates ONLY if the user names a time period (yesterday, this week, in October).",
+                (if (history.isNotBlank()) "Conversation so far:\n$history\n\n" else "") + "Latest question: $question", true
+            ))
+        }.getOrNull()
+        val standalone = plan?.optString("standalone").orEmpty().ifBlank { question }
+        val intent = plan?.optString("intent").orEmpty()
+        val keywords = strings(plan?.optJSONArray("keywords")).joinToString(" ")
+        val from = parseDay(plan?.optString("from"), false)
+        val to = parseDay(plan?.optString("to"), true)
+
+        // 2) retrieve
+        val pool = usable.filter { (from == null || it.createdAt >= from) && (to == null || it.createdAt <= to) }.ifEmpty { usable }
+        val chunks = Retriever.build(pool)
+        val latestIds = pool.sortedByDescending { it.createdAt }.take(2).map { it.id }.toSet()
+        var picked: List<Retriever.Chunk> = when (intent) {
+            "actions" -> chunks.filter { it.kind == "actions" }.sortedByDescending { it.createdAt }.take(20)
+            "overview" -> chunks.filter { it.kind == "summary" || it.kind == "points" }.sortedByDescending { it.createdAt }.take(16)
+            "recent" -> chunks.filter { it.recId in latestIds }.take(16)
+            else -> Retriever.search(chunks, "$standalone $keywords", 14)
         }
-        if (ctx.isBlank()) return "I don't have any transcripts yet. Record something with your Groq key set, and ask me again."
-        return chat(
+        if (picked.isEmpty()) picked = Retriever.search(chunks, "$standalone $keywords", 14)
+        if (picked.isEmpty()) picked = chunks.filter { it.kind == "summary" }.sortedByDescending { it.createdAt }.take(8)
+
+        val stampFmt = java.text.SimpleDateFormat("d MMM yyyy, h:mm a", java.util.Locale.getDefault())
+        val ctxText = StringBuilder()
+        picked.forEachIndexed { i, c ->
+            val one = "[#${i + 1}] \"${c.title}\" · ${stampFmt.format(java.util.Date(c.createdAt))}" +
+                (if (c.stamp.isNotEmpty()) " · at ${c.stamp}" else "") + " (${c.kind})\n${c.text}\n\n"
+            if (ctxText.length + one.length < 14000) ctxText.append(one)
+        }
+
+        // 3) answer
+        val out = chat(
             key,
-            "You are Echo, the user's second brain. Answer ONLY from the user's recordings below; if the answer isn't there, say so plainly. " +
-                "Be accurate and complete but concise. Write plain conversational text: NO markdown symbols (no ** or #), " +
-                "no bracketed citations. Use short paragraphs, or simple lines starting with '- ' for lists. " +
-                "When useful, mention the recording title and time in normal words, e.g. (Status update, 1:18 pm). " +
-                "Today is ${fmt.format(java.util.Date())}.",
+            "You are Echo, the user's second brain. Answer ONLY from the numbered passages from their recordings; " +
+                "if the answer isn't there, say so plainly and say what you did find. Be accurate and complete, but concise and well organised. " +
+                "Plain conversational text: NO markdown symbols (no ** or #), no bracketed citations in the answer. " +
+                "Use short paragraphs, or lines starting with '- ' for lists. Mention the recording and time in normal words when useful. " +
+                "Today is $today. Reply ONLY with JSON: {\"answer\": string, \"follow_ups\": [exactly 3 short natural follow-up questions the user might ask next], " +
+                "\"used\": [numbers of the passages you relied on]}",
             (if (history.isNotBlank()) "Conversation so far:\n$history\n\n" else "") +
-                "Recordings:\n$ctx\n\nQuestion: $question", false
+                "Passages:\n$ctxText\nQuestion: $standalone", true
         )
+        val j = runCatching { parseObj(out) }.getOrNull()
+        val answer = j?.optString("answer").orEmpty().ifBlank { out }
+        val used = j?.optJSONArray("used")?.let { a -> List(a.length()) { a.optInt(it) } } ?: emptyList()
+        val sources = (used.mapNotNull { picked.getOrNull(it - 1) }.ifEmpty { picked.take(2) })
+            .distinctBy { it.recId + it.stamp }.take(4).map { Source(it.recId, it.title, it.stamp) }
+        return Answer(answer, strings(j?.optJSONArray("follow_ups")).take(3), sources)
     }
 
     private fun localTags(r: Recording): List<String> = buildList {

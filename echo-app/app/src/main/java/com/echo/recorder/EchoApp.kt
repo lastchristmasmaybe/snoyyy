@@ -11,6 +11,7 @@ class EchoApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Repository.init(this)
+        ChatStore.init(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "Recording", NotificationManager.IMPORTANCE_LOW).apply {
