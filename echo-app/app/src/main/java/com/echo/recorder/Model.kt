@@ -17,6 +17,7 @@ data class Recording(
     val summary: String? = null,
     val actionItems: List<String> = emptyList(),
     val tags: List<String> = emptyList(),
+    val people: List<String> = emptyList(),
     /** pending | working | done | local | error:<msg> */
     val aiStatus: String = "pending",
 ) {
@@ -30,6 +31,7 @@ data class Recording(
         put("summary", summary ?: JSONObject.NULL)
         put("actionItems", JSONArray(actionItems))
         put("tags", JSONArray(tags))
+        put("people", JSONArray(people))
         put("aiStatus", aiStatus)
     }
 
@@ -48,6 +50,7 @@ data class Recording(
             summary = o.optString("summary").takeIf { it.isNotEmpty() && !o.isNull("summary") },
             actionItems = o.optJSONArray("actionItems").toStringList(),
             tags = o.optJSONArray("tags").toStringList(),
+            people = o.optJSONArray("people").toStringList(),
             aiStatus = o.optString("aiStatus", "pending"),
         )
     }

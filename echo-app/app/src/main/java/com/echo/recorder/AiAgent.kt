@@ -23,7 +23,7 @@ data class Insight(val emoji: String, val title: String, val body: String)
 /**
  * Always-on AI layer.
  *  - Local (no key needed): smart tagging + recommendations from audio stats and habits.
- *  - Cloud (keys in Settings): Whisper transcription -> Claude summary, title, action items, tags.
+ *  - Cloud (keys in Settings): Groq Whisper -> Groq Llama summary, title, action items, tags.
  */
 object AiAgent {
     private val http = OkHttpClient.Builder()
@@ -40,17 +40,27 @@ object AiAgent {
         rec = rec.copy(tags = localTags(rec), aiStatus = "working")
         Repository.upsert(rec)
 
-        if (s.openAiKey.isBlank()) {
+        if (s.groqKey.isBlank()) {
             Repository.upsert(rec.copy(aiStatus = "local"))
             return
         }
         try {
-            val transcript = transcribe(s.openAiKey, File(rec.path))
+            val diarized = false
+            var transcript = transcribe(s.groqKey, File(rec.path))
             rec = rec.copy(transcript = transcript)
             Repository.upsert(rec)
-            if (s.anthropicKey.isNotBlank() && transcript.isNotBlank()) {
-                val j = summarize(s.anthropicKey, transcript)
+            if (transcript.isNotBlank()) {
+                val memory = Repository.items.value.filter { it.id != rec.id && it.summary != null }.take(10)
+                    .joinToString("\n") { "- ${it.title}: ${it.summary} People: ${it.people.joinToString()}" }
+                val j = summarize(s.groqKey, transcript, memory, diarized)
+                // Replace "Speaker N" with the names the model could infer from context.
+                j.optJSONObject("speakers")?.let { m ->
+                    m.keys().forEach { k -> val n = m.optString(k); if (n.isNotBlank() && !n.startsWith("Speaker")) transcript = transcript.replace("$k:", "$n:") }
+                }
+                j.optString("labelled_transcript").takeIf { it.length > 20 }?.let { transcript = it }
                 rec = rec.copy(
+                    transcript = transcript,
+                    people = j.optJSONObject("speakers")?.let { m -> m.keys().asSequence().map { k -> k + " = " + m.optString(k) }.toList() } ?: emptyList(),
                     title = j.optString("title").ifBlank { rec.title },
                     summary = j.optString("summary").ifBlank { null },
                     actionItems = j.optJSONArray("action_items")?.let { a -> List(a.length()) { a.getString(it) } } ?: emptyList(),
@@ -63,37 +73,80 @@ object AiAgent {
         }
     }
 
+    /** Free tiers rate-limit; wait and retry politely instead of failing (never falls back to paid). */
+    private fun execRetry(req: Request): okhttp3.Response {
+        var r = http.newCall(req).execute()
+        var tries = 0
+        while (r.code == 429 && tries < 2) {
+            val wait = (r.header("retry-after")?.toLongOrNull() ?: 8L).coerceIn(2L, 30L)
+            r.close(); Thread.sleep(wait * 1000); tries++
+            r = http.newCall(req).execute()
+        }
+        return r
+    }
+
+    private const val GROQ = "https://api.groq.com/openai/v1"
+
     private fun transcribe(key: String, f: File): String {
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-            .addFormDataPart("model", "whisper-1")
+            .addFormDataPart("model", "whisper-large-v3-turbo")
             .addFormDataPart("file", f.name, f.asRequestBody("audio/mp4".toMediaType()))
             .build()
-        val req = Request.Builder().url("https://api.openai.com/v1/audio/transcriptions")
+        val req = Request.Builder().url("$GROQ/audio/transcriptions")
             .header("Authorization", "Bearer $key").post(body).build()
-        http.newCall(req).execute().use { r ->
+        execRetry(req).use { r ->
             val txt = r.body?.string().orEmpty()
-            if (!r.isSuccessful) error("Transcription ${r.code}")
+            if (!r.isSuccessful) error("Transcription ${r.code}: " + txt.take(80))
             return JSONObject(txt).optString("text")
         }
     }
 
-    private fun summarize(key: String, transcript: String): JSONObject {
-        val prompt = "You are the intelligence inside a voice recorder. From this transcript return ONLY a JSON " +
-            "object with keys: title (max 6 words), summary (2-3 sentences), action_items (array of short strings), " +
-            "tags (array of up to 4 lowercase words).\n\nTranscript:\n" + transcript.take(60000)
+    private fun chat(key: String, system: String, user: String, json: Boolean): String {
         val payload = JSONObject()
-            .put("model", "claude-haiku-5-5")
-            .put("max_tokens", 1024)
-            .put("messages", org.json.JSONArray().put(JSONObject().put("role", "user").put("content", prompt)))
-        val req = Request.Builder().url("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", key).header("anthropic-version", "2023-06-01")
+            .put("model", "llama-3.3-70b-versatile")
+            .put("temperature", 0.3)
+            .put("messages", org.json.JSONArray()
+                .put(JSONObject().put("role", "system").put("content", system))
+                .put(JSONObject().put("role", "user").put("content", user)))
+        if (json) payload.put("response_format", JSONObject().put("type", "json_object"))
+        val req = Request.Builder().url("$GROQ/chat/completions")
+            .header("Authorization", "Bearer $key")
             .post(payload.toString().toRequestBody("application/json".toMediaType())).build()
-        http.newCall(req).execute().use { r ->
+        execRetry(req).use { r ->
             val txt = r.body?.string().orEmpty()
-            if (!r.isSuccessful) error("Summary ${r.code}")
-            val out = JSONObject(txt).getJSONArray("content").getJSONObject(0).getString("text")
-            return JSONObject(out.substring(out.indexOf('{'), out.lastIndexOf('}') + 1))
+            if (!r.isSuccessful) error(if (r.code == 429) "Free limit reached, tap Run AI again later" else "AI ${r.code}: " + txt.take(80))
+            return JSONObject(txt).getJSONArray("choices").getJSONObject(0)
+                .getJSONObject("message").getString("content")
         }
+    }
+
+    private fun summarize(key: String, transcript: String, memory: String, diarized: Boolean): JSONObject {
+        val out = chat(
+            key,
+            "You are the intelligence inside a voice recorder. Understand context and references: resolve pronouns " +
+                "and phrases like 'he', 'that demo', 'the client' using the transcript and the user's earlier recordings. " +
+                (if (diarized) "The transcript is labelled Speaker 0, Speaker 1... Infer who each speaker is from how they address " +
+                    "each other and introduce themselves; use a name only if the evidence is clear, otherwise a role or 'Unknown'. " else "") +
+                "Reply ONLY with a JSON object with keys: title (max 6 words), summary (2-3 sentences with references resolved), " +
+                "action_items (array of short strings, each naming the owner if known), tags (array of up to 4 lowercase words)" +
+                (if (diarized) ", speakers (object mapping label like \"Speaker 0\" to a name or role)." else "."),
+            "Earlier recordings (memory):\n" + memory.ifBlank { "(none)" } + "\n\nTranscript:\n" + transcript.take(24000), true
+        )
+        return JSONObject(out)
+    }
+
+    /** Ask your past self: answers grounded only in your recordings. */
+    fun ask(key: String, question: String, items: List<Recording>): String {
+        val ctx = items.filter { !it.transcript.isNullOrBlank() }.take(15).joinToString("\n\n") {
+            "[" + java.text.SimpleDateFormat("d MMM h:mm a", java.util.Locale.getDefault()).format(java.util.Date(it.createdAt)) +
+                " · ${it.title}]\n" + (it.summary ?: "") + "\n" + it.transcript!!.take(2500)
+        }
+        if (ctx.isBlank()) return "No transcripts yet. Record something with AI enabled first."
+        return chat(
+            key,
+            "Answer the question using ONLY the user's recordings below. Be brief. If the answer isn't there, say so.",
+            "Recordings:\n$ctx\n\nQuestion: $question", false
+        )
     }
 
     private fun localTags(r: Recording): List<String> = buildList {
