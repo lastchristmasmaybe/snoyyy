@@ -65,7 +65,8 @@ fun EchoRoot() {
                 listOf(
                     Triple("Record", Icons.Default.Mic, 0),
                     Triple("Library", Icons.Default.GraphicEq, 1),
-                    Triple("Settings", Icons.Default.Tune, 2),
+                    Triple("Ask", Icons.Default.AutoAwesome, 2),
+                    Triple("Settings", Icons.Default.Tune, 3),
                 ).forEach { (label, icon, i) ->
                     NavigationBarItem(
                         selected = tab == i,
@@ -97,6 +98,7 @@ fun EchoRoot() {
             when (tab) {
                 0 -> HomeScreen()
                 1 -> LibraryScreen()
+                2 -> AskScreen()
                 else -> SettingsScreen { update = it }
             }
         }
@@ -110,7 +112,7 @@ fun HomeScreen() {
     val ctx = LocalContext.current
     val ui by RecorderState.state.collectAsStateWithLifecycle()
     val items by Repository.items.collectAsStateWithLifecycle()
-    val hasKeys = Settings(ctx).openAiKey.isNotBlank()
+    val hasKeys = Settings(ctx).groqKey.isNotBlank()
     val active = ui.status != RecorderState.Status.Idle
 
     val perms = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
@@ -261,6 +263,14 @@ fun LibraryScreen() {
         Spacer(Modifier.height(16.dp))
         Text("Library", fontSize = 28.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
+        val todo = items.flatMap { r -> r.actionItems.map { it } }.take(5)
+        if (todo.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Surface1).padding(14.dp)) {
+                Text("✅ Open action items", fontWeight = FontWeight.SemiBold)
+                todo.forEach { Text("• $it", color = TextDim, fontSize = 13.sp) }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
         if (items.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("No recordings yet. Hit the red button.", color = TextDim)
@@ -350,8 +360,7 @@ fun AiStatusIcon(status: String) {
 fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
     val ctx = LocalContext.current
     val s = remember { Settings(ctx) }
-    var openai by remember { mutableStateOf(s.openAiKey) }
-    var anth by remember { mutableStateOf(s.anthropicKey) }
+    var groq by remember { mutableStateOf(s.groqKey) }
     var shake by remember { mutableStateOf(s.shakeBookmark) }
     var hap by remember { mutableStateOf(s.haptics) }
     var msg by remember { mutableStateOf("") }
@@ -362,15 +371,10 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
         item { Spacer(Modifier.height(16.dp)); Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.Bold) }
         item {
             Text("AI brain", fontWeight = FontWeight.SemiBold)
-            Text("Keys stay on this device. Transcription uses OpenAI Whisper, summaries use Claude.", color = TextDim, fontSize = 12.sp)
+            Text("One free Groq key powers transcripts, summaries, action items and Ask. Get it at console.groq.com. The key stays on this device; recording audio is uploaded to Groq only for transcription.", color = TextDim, fontSize = 12.sp)
         }
         item {
-            OutlinedTextField(openai, { openai = it; s.openAiKey = it }, label = { Text("OpenAI API key (transcription)") },
-                singleLine = true, visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
-        }
-        item {
-            OutlinedTextField(anth, { anth = it; s.anthropicKey = it }, label = { Text("Anthropic API key (summaries)") },
+            OutlinedTextField(groq, { groq = it; s.groqKey = it }, label = { Text("Groq API key") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
         }
@@ -406,5 +410,41 @@ fun SwitchRow(title: String, sub: String, checked: Boolean, onChange: (Boolean) 
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Surface1).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.Medium); Text(sub, color = TextDim, fontSize = 12.sp) }
         Switch(checked, onChange, colors = SwitchDefaults.colors(checkedTrackColor = RecRed))
+    }
+}
+
+// ───────────────────────── Ask ─────────────────────────
+
+@Composable
+fun AskScreen() {
+    val ctx = LocalContext.current
+    val items by Repository.items.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    var q by remember { mutableStateOf("") }
+    var answer by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Text("Ask your past self", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text("Answers come only from what you recorded.", color = TextDim, fontSize = 13.sp)
+        Spacer(Modifier.height(16.dp))
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (busy) CircularProgressIndicator(color = Violet)
+            else Text(answer.ifEmpty { "Example: \"What did I decide about the launch?\"" },
+                color = if (answer.isEmpty()) TextDim else Color.White)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(q, { q = it }, placeholder = { Text("Ask your recordings…") }, modifier = Modifier.weight(1f), singleLine = true)
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = {
+                val key = Settings(ctx).groqKey
+                if (key.isBlank()) { answer = "Add your Groq key in Settings first."; return@Button }
+                busy = true
+                scope.launch {
+                    answer = runCatching { withContext(Dispatchers.IO) { AiAgent.ask(key, q, items) } }
+                        .getOrElse { "Couldn't reach AI: " + (it.message ?: "error") }
+                    busy = false
+                }
+            }, colors = ButtonDefaults.buttonColors(containerColor = RecRed)) { Text("Ask") }
+        }
     }
 }
