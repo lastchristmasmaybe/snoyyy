@@ -616,8 +616,8 @@ fun RecordingCard(r: Recording) {
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Pill(if (playing == r.id) "Stop" else "Play") { Haptics.click(ctx); runCatching { Player.toggle(r) } }
-            if (r.aiStatus == "local" || r.aiStatus.startsWith("error"))
-                Pill("Run AI") { EchoApp.appScope.launchAi(ctx.applicationContext, r.id, manual = true) }
+            if (r.aiStatus != "working")
+                Pill(if (r.aiStatus == "done") "Redo AI" else "Run AI") { EchoApp.appScope.launchAi(ctx.applicationContext, r.id, manual = true) }
             Pill("Delete", danger = true) { confirmDelete = true }
         }
     }

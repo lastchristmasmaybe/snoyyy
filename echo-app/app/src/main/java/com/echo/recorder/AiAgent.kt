@@ -46,12 +46,13 @@ object AiAgent {
         }
         try {
             val key = s.groqKey
-            val memory = Repository.items.value.filter { it.id != rec.id && it.summary != null }.take(10)
-            val memoryText = memory.joinToString("\n") { "- ${it.title}: ${it.summary} People: ${it.people.joinToString()}" }
-            val glossary = memory.flatMap { it.people.map { p -> p.substringAfter("= ", p) } }.distinct().joinToString(", ")
+            // Only NAMES heard in earlier recordings are shared (to spell them right if they are spoken here).
+            // No facts, summaries or topics from other recordings ever enter this one.
+            val names = Repository.items.value.filter { it.id != rec.id }.flatMap { it.people.map { p -> p.substringAfter("= ", "") } }
+                .filter { it.isNotBlank() && !it.startsWith("Voice") }.distinct().take(30).joinToString(", ")
 
             // 2) Full transcript: every part of the audio, with timestamps, nothing skipped.
-            val tr = transcribeAll(key, File(rec.path), rec.durationMs, glossary)
+            val tr = transcribeAll(key, File(rec.path), rec.durationMs)
             val labelled = TranscriptTools.format(tr.segs, rec.speakerRuns, rec.voices)
             rec = rec.copy(transcript = labelled)
             Repository.upsert(rec)
@@ -61,7 +62,18 @@ object AiAgent {
             }
 
             // 3) Complete notes: every part of the transcript is read, plus your bookmarked moments.
-            val notes = buildNotes(key, labelled, rec, memoryText)
+            val raw = buildNotes(key, labelled, rec, names)
+            // Isolation guard: keep only what THIS transcript supports.
+            val tt = Grounding.tokenSet(labelled)
+            val notes = Notes(
+                title = raw.title.takeIf { Grounding.supported(it, tt, 0.34) } ?: "",
+                summary = Grounding.summary(raw.summary, tt),
+                keyPoints = Grounding.filter(raw.keyPoints, tt), decisions = Grounding.filter(raw.decisions, tt),
+                actionItems = Grounding.filter(raw.actionItems, tt), questions = Grounding.filter(raw.questions, tt),
+                highlights = Grounding.filter(raw.highlights, tt),
+                speakers = raw.speakers.filter { (_, v) -> v.startsWith("Voice") || Grounding.nameSpoken(v, labelled) },
+                tags = raw.tags,
+            )
             var transcript = labelled
             notes.speakers.forEach { (label, name) ->
                 if (name.isNotBlank() && !name.startsWith("Voice")) transcript = transcript.replace("$label:", "$name:")
@@ -114,7 +126,7 @@ object AiAgent {
      * the free upload limit; each piece is primed with the previous text for continuity, then stitched
      * back together without duplicated or missing words. A failed piece is retried, then marked as a gap.
      */
-    private fun transcribeAll(key: String, f: File, durationMs: Long, glossary: String): Transcription {
+    private fun transcribeAll(key: String, f: File, durationMs: Long): Transcription {
         val durSec = durationMs / 1000.0
         val plan: List<Pair<Double, Double>> =
             if (f.length() <= MAX_UPLOAD) listOf(0.0 to durSec) else {
@@ -135,7 +147,7 @@ object AiAgent {
                 }
                 tmp
             }
-            val prompt = (glossary.take(80) + " " + acc.takeLast(3).joinToString(" ") { it.text }).trim().takeLast(220)
+            val prompt = acc.takeLast(3).joinToString(" ") { it.text }.trim().takeLast(220)   // continuity within THIS recording only
             val segs = runCatching { whisper(key, piece, from, prompt) }
                 .recoverCatching { Thread.sleep(4000); whisper(key, piece, from, prompt) }
                 .getOrNull()
@@ -256,7 +268,7 @@ object AiAgent {
      * points, decisions, tasks, questions and key moments; those lists are merged (never re-summarised away),
      * then one final pass writes the title, a thorough summary, tags and who the voices are.
      */
-    private fun buildNotes(key: String, transcript: String, rec: Recording, memory: String): Notes {
+    private fun buildNotes(key: String, transcript: String, rec: Recording, knownNames: String): Notes {
         val parts = TranscriptTools.chunkText(transcript, 7000)
         val kp = ArrayList<String>(); val dec = ArrayList<String>(); val act = ArrayList<String>()
         val qs = ArrayList<String>(); val hl = ArrayList<String>(); val names = ArrayList<String>()
@@ -264,12 +276,12 @@ object AiAgent {
             val out = chat(
                 key,
                 "You extract notes from part ${i + 1} of ${parts.size} of a voice-recording transcript. Timestamps look like [mm:ss]. " +
-                    "Miss NOTHING that matters: keep every name, number, date, amount, deadline, commitment and reason, quoted exactly. " +
-                    "Resolve pronouns and references (he, she, that project) using the transcript and the user's earlier recordings. " +
-                    "Never invent facts. Reply ONLY with JSON: {\"key_points\":[strings], \"decisions\":[strings], " +
+                    "Use ONLY what is said in this transcript part. Miss NOTHING that matters: keep every name, number, date, amount, deadline, commitment and reason, quoted exactly. " +
+                    "Resolve pronouns and references (he, she, that project) from the transcript itself. " +
+                    "Never add facts, people, tasks or topics that are not in the transcript. Reply ONLY with JSON: {\"key_points\":[strings], \"decisions\":[strings], " +
                     "\"action_items\":[{\"task\":string,\"owner\":string,\"due\":string}], \"questions\":[open questions], " +
                     "\"highlights\":[{\"t\":\"mm:ss\",\"text\":string}] (the most important moments), \"names\":[people, places, orgs]}",
-                "Earlier recordings (memory):\n" + memory.ifBlank { "(none)" } + "\n\nTranscript part:\n" + part, true
+                "Names heard in other recordings (use ONLY to spell a name correctly if it is actually spoken below; never copy anything else from them): " + knownNames.ifBlank { "(none)" } + "\n\nTranscript part:\n" + part, true
             )
             val j = runCatching { parseObj(out) }.getOrNull() ?: continue
             kp += strings(j.optJSONArray("key_points")); dec += strings(j.optJSONArray("decisions"))
@@ -296,10 +308,10 @@ object AiAgent {
             key,
             "You write the final notes for a voice recording. $voices" +
                 "Be thorough: the summary must cover EVERY topic discussed, in order, with the specifics (names, numbers, dates). " +
-                "Resolve references using the user's earlier recordings. Never invent facts. Reply ONLY with JSON: " +
+                "Use ONLY this recording: never bring in details, people or topics from any other recording, and never invent facts. If the recording is very short or says little, say so briefly instead of padding. Reply ONLY with JSON: " +
                 "{\"title\":string (max 7 words), \"summary\":string (as many short paragraphs as needed, one per topic), " +
                 "\"tags\":[up to 5 lowercase words], \"speakers\":{\"Voice 1\":name-or-role}}",
-            "Earlier recordings (memory):\n" + memory.ifBlank { "(none)" } + "\n\nNotes gathered from the whole recording:\n" + condensed +
+            "Names heard in other recordings (spelling aid only, never copy anything else): " + knownNames.ifBlank { "(none)" } + "\n\nNotes gathered from the whole recording:\n" + condensed +
                 "\n\nOpening of the transcript:\n" + transcript.take(2500), true
         )
         val f = runCatching { parseObj(out) }.getOrNull() ?: JSONObject()
