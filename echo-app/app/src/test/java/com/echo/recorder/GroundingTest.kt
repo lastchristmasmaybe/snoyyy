@@ -33,7 +33,7 @@ class GroundingTest {
 
     @Test fun veryShortRecordingsDoNotGetPaddedNotes() {
         val short = Grounding.tokenSet("[00:00] you stop it")
-        val notes = listOf("Discussed the quarterly budget and hiring plan", "Speaker tells someone to stop it")
-        assertEquals(listOf("Speaker tells someone to stop it"), Grounding.filter(notes, short))
+        val notes = listOf("Discussed the quarterly budget and hiring plan", "Says to stop")
+        assertEquals(listOf("Says to stop"), Grounding.filter(notes, short))
     }
 }
