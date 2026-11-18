@@ -320,7 +320,6 @@ fun SmallRound(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: Stri
     ) { Icon(icon, desc, tint = Ink) }
 }
 
-@Composable
 val SpeakerColors = listOf(Color(0xFF2F7BFF), Color(0xFFFF8A3D), Color(0xFF12B886))
 
 @Composable
