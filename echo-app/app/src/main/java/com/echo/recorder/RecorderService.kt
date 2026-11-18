@@ -32,7 +32,8 @@ import kotlin.math.sqrt
  */
 class RecorderService : Service(), SensorEventListener {
 
-    private var recorder: MediaRecorder? = null
+    private var engine: AudioEngine? = null
+    private val speakers = ArrayList<Int>()
     private var file: File? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -87,31 +88,21 @@ class RecorderService : Service(), SensorEventListener {
         running = true
         segmentStart = System.currentTimeMillis()
         accumulatedMs = 0
-        levels.clear(); bookmarks.clear()
+        levels.clear(); speakers.clear(); bookmarks.clear()
         levelSum = 0.0; levelCount = 0; peak = 0f; silentCount = 0
 
         // Must promote to foreground immediately (microphone type needs RECORD_AUDIO).
         val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
         ServiceCompat.startForeground(this, NOTIF_ID, buildNotification(), type)
 
-        try {
-            val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
-            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setAudioChannels(1)
-            r.setAudioSamplingRate(44100)
-            r.setAudioEncodingBitRate(64000)
-            r.setOutputFile(out.absolutePath)
-            r.prepare()
-            r.start()
-            recorder = r
-        } catch (e: Exception) {
+        val e = AudioEngine(out)
+        if (!e.start()) {
             running = false
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
+        engine = e
 
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "echo:recording").apply { acquire(6 * 60 * 60 * 1000L) }
@@ -128,7 +119,7 @@ class RecorderService : Service(), SensorEventListener {
 
     private fun pauseRecording() {
         if (!running || paused) return
-        runCatching { recorder?.pause() }
+        engine?.paused = true
         accumulatedMs += System.currentTimeMillis() - segmentStart
         paused = true
         Haptics.click(this)
@@ -137,7 +128,7 @@ class RecorderService : Service(), SensorEventListener {
 
     private fun resumeRecording() {
         if (!running || !paused) return
-        runCatching { recorder?.resume() }
+        engine?.paused = false
         segmentStart = System.currentTimeMillis()
         paused = false
         Haptics.click(this)
@@ -156,15 +147,15 @@ class RecorderService : Service(), SensorEventListener {
         running = false
         handler.removeCallbacks(tick)
         val total = elapsed()
-        val ok = runCatching { recorder?.stop() }.isSuccess
-        runCatching { recorder?.release() }
-        recorder = null
+        engine?.stop()
+        val voices = engine?.voices ?: 0
+        engine = null
         (getSystemService(Context.SENSOR_SERVICE) as SensorManager).unregisterListener(this)
         wakeLock?.let { if (it.isHeld) it.release() }
 
         var savedId: String? = null
         val f = file
-        if (ok && f != null && f.exists() && total > 800) {
+        if (f != null && f.exists() && f.length() > 0 && total > 800) {
             val id = UUID.randomUUID().toString()
             val rec = Recording(
                 id = id,
@@ -176,6 +167,7 @@ class RecorderService : Service(), SensorEventListener {
                 peakLevel = peak,
                 silenceRatio = if (levelCount > 0) silentCount.toFloat() / levelCount else 0f,
                 bookmarks = bookmarks.toList(),
+                voices = voices,
             )
             Repository.upsert(rec)
             savedId = id
@@ -192,7 +184,7 @@ class RecorderService : Service(), SensorEventListener {
 
     override fun onDestroy() {
         handler.removeCallbacks(tick)
-        runCatching { recorder?.release() }
+        engine?.stop()
         wakeLock?.let { if (it.isHeld) it.release() }
         (getSystemService(Context.SENSOR_SERVICE) as SensorManager).unregisterListener(this)
         super.onDestroy()
@@ -204,11 +196,10 @@ class RecorderService : Service(), SensorEventListener {
         accumulatedMs + if (!paused && running) System.currentTimeMillis() - segmentStart else 0
 
     private fun sample() {
-        val amp = runCatching { recorder?.maxAmplitude ?: 0 }.getOrDefault(0)
-        // sqrt curve makes quiet speech visible in the graph
-        val lvl = sqrt((amp / 32767f).coerceIn(0f, 1f))
+        val (lvl, sp) = engine?.poll() ?: (0f to -1)
         levels.add(lvl)
-        if (levels.size > 120) levels.removeAt(0)
+        speakers.add(sp)
+        if (levels.size > 120) { levels.removeAt(0); speakers.removeAt(0) }
         levelSum += lvl; levelCount++
         if (lvl > peak) peak = lvl
         if (lvl < 0.08f) silentCount++
@@ -219,6 +210,8 @@ class RecorderService : Service(), SensorEventListener {
             status = if (paused) RecorderState.Status.Paused else RecorderState.Status.Recording,
             elapsedMs = elapsed(),
             levels = levels.toList(),
+            speakers = speakers.toList(),
+            voices = engine?.voices ?: 0,
             bookmarks = bookmarks.toList(),
         )
     }
@@ -265,7 +258,7 @@ class RecorderService : Service(), SensorEventListener {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setStyle(
                 NotificationCompat.BigPictureStyle()
-                    .bigPicture(NotificationWave.render(levels, paused))
+                    .bigPicture(NotificationWave.render(levels, speakers, paused))
                     .setSummaryText(if (bookmarks.isEmpty()) "Shake phone to bookmark a moment" else "${bookmarks.size} bookmark(s)")
             )
         if (paused) {

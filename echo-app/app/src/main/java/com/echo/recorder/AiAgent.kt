@@ -135,6 +135,8 @@ object AiAgent {
         return JSONObject(out)
     }
 
+    fun test(key: String): String = chat(key, "Reply with the single word OK.", "ping", false)
+
     /** Ask your past self: answers grounded only in your recordings. */
     fun ask(key: String, question: String, items: List<Recording>): String {
         val ctx = items.filter { !it.transcript.isNullOrBlank() }.take(15).joinToString("\n\n") {
@@ -155,6 +157,7 @@ object AiAgent {
         if (r.silenceRatio > 0.6f) add("mostly-quiet")
         if (r.avgLevel > 0.45f) add("loud")
         if (r.bookmarks.isNotEmpty()) add("bookmarked")
+        if (r.voices >= 2) add("conversation")
         val h = Calendar.getInstance().apply { timeInMillis = r.createdAt }.get(Calendar.HOUR_OF_DAY)
         add(when (h) { in 5..11 -> "morning"; in 12..17 -> "afternoon"; in 18..22 -> "evening"; else -> "late-night" })
     }
