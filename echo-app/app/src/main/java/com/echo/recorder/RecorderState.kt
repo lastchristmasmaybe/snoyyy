@@ -10,6 +10,8 @@ object RecorderState {
         val status: Status = Status.Idle,
         val elapsedMs: Long = 0,
         val levels: List<Float> = emptyList(),
+        val speakers: List<Int> = emptyList(),
+        val voices: Int = 0,
         val bookmarks: List<Long> = emptyList(),
         val lastRecordingId: String? = null,
     )

@@ -224,7 +224,18 @@ fun HomeScreen() {
                 RecorderService.fmt(ui.elapsedMs),
                 fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 52.sp, letterSpacing = (-1).sp, color = Ink,
             )
-            Waveform(ui.levels, active, Modifier.fillMaxWidth().height(if (active) 64.dp else 12.dp))
+            Waveform(ui.levels, ui.speakers, active, Modifier.fillMaxWidth().height(if (active) 64.dp else 12.dp))
+            if (active && ui.voices > 0) {
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.padding(top = 6.dp)) {
+                    for (k in 0 until ui.voices) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(10.dp).clip(CircleShape).background(SpeakerColors[k % 3]))
+                            Spacer(Modifier.width(5.dp))
+                            Text("Voice ${k + 1}", color = TextDim, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
             Spacer(Modifier.height(8.dp))
         }
         item {
@@ -310,18 +321,24 @@ fun SmallRound(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: Stri
 }
 
 @Composable
-fun Waveform(levels: List<Float>, active: Boolean, modifier: Modifier) {
+val SpeakerColors = listOf(Color(0xFF2F7BFF), Color(0xFFFF8A3D), Color(0xFF12B886))
+
+@Composable
+fun Waveform(levels: List<Float>, speakers: List<Int>, active: Boolean, modifier: Modifier) {
     Canvas(modifier) {
         val bars = 52
         val gap = 4.dp.toPx()
         val bw = (size.width - gap * (bars - 1)) / bars
         val data = levels.takeLast(bars)
+        val spk = speakers.takeLast(bars)
         val off = bars - data.size
         for (i in 0 until bars) {
             val v = if (i < off) 0.06f else data[i - off].coerceIn(0.06f, 1f)
             val h = size.height * v
             val x = i * (bw + gap)
-            val c = if (active) Brush.verticalGradient(listOf(RecRedSoft, RecRed)) else Brush.verticalGradient(listOf(Hairline, Hairline))
+            val sp = if (i >= off) spk.getOrElse(i - off) { -1 } else -1
+            val base = if (sp >= 0) SpeakerColors[sp % 3] else if (active) Color(0xFF9AA597) else Hairline
+            val c = Brush.verticalGradient(listOf(base.copy(alpha = 0.7f), base))
             drawRoundRect(c, Offset(x, (size.height - h) / 2), Size(bw, h), CornerRadius(bw / 2))
         }
     }
@@ -421,7 +438,7 @@ fun RecordingCard(r: Recording) {
             )
             AiStatusIcon(r.aiStatus)
             Spacer(Modifier.width(8.dp))
-            Text(RecorderService.fmt(r.durationMs), color = TextDim, fontSize = 13.sp)
+            Text((if (r.voices >= 2) "${r.voices} voices · " else "") + RecorderService.fmt(r.durationMs), color = TextDim, fontSize = 13.sp)
         }
         Spacer(Modifier.height(6.dp))
         Text(r.title, color = Ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, fontFamily = Serif, maxLines = if (open) 6 else 2)

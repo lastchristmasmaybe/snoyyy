@@ -10,7 +10,7 @@ import android.graphics.Shader
 
 /** Renders the live voice-flow graph shown in the expanded notification. */
 object NotificationWave {
-    fun render(levels: List<Float>, paused: Boolean, w: Int = 720, h: Int = 200): Bitmap {
+    fun render(levels: List<Float>, speakers: List<Int>, paused: Boolean, w: Int = 720, h: Int = 200): Bitmap {
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         c.drawColor(Color.parseColor("#F2EEDD"))
@@ -27,12 +27,17 @@ object NotificationWave {
             )
         }
         val data = levels.takeLast(bars)
+        val spk = speakers.takeLast(bars)
+        val cols = intArrayOf(Color.parseColor("#2F7BFF"), Color.parseColor("#FF8A3D"), Color.parseColor("#12B886"))
+        val flat = Paint(Paint.ANTI_ALIAS_FLAG)
         val offset = bars - data.size
         for (i in 0 until bars) {
             val v = if (i < offset) 0.03f else data[i - offset].coerceIn(0.03f, 1f)
             val half = (h * 0.46f) * v
             val x = gap + i * (bw + gap)
-            c.drawRoundRect(RectF(x, mid - half, x + bw, mid + half), bw / 2, bw / 2, paint)
+            val sp = if (i >= offset) spk.getOrElse(i - offset) { -1 } else -1
+            val p = if (!paused && sp >= 0) flat.apply { shader = null; color = cols[sp % 3] } else paint
+            c.drawRoundRect(RectF(x, mid - half, x + bw, mid + half), bw / 2, bw / 2, p)
         }
         return bmp
     }
