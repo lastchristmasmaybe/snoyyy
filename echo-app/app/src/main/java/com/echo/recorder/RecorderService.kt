@@ -93,7 +93,8 @@ class RecorderService : Service(), SensorEventListener {
         val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
         ServiceCompat.startForeground(this, NOTIF_ID, buildNotification(), type)
 
-        val e = AudioEngine(out)
+        val st = Settings(this)
+        val e = AudioEngine(out, st.bitrate, st.detectVoices)
         if (!e.start()) {
             running = false
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -220,7 +221,7 @@ class RecorderService : Service(), SensorEventListener {
     override fun onSensorChanged(e: SensorEvent) {
         val g = sqrt(e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2]) / 9.81f
         val now = System.currentTimeMillis()
-        if (g > 3.2f && now - lastShake > 2500 && running && !paused) {
+        if (g > Settings(this).shakeThreshold && now - lastShake > 2500 && running && !paused) {
             lastShake = now
             addBookmark()
         }

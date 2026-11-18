@@ -14,8 +14,8 @@ import java.io.File
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
-fun CoroutineScope.launchAi(ctx: Context, id: String) {
-    launch { AiAgent.process(ctx, id) }
+fun CoroutineScope.launchAi(ctx: Context, id: String, manual: Boolean = false) {
+    launch { AiAgent.process(ctx, id, manual) }
 }
 
 data class Insight(val emoji: String, val title: String, val body: String)
@@ -32,7 +32,7 @@ object AiAgent {
         .writeTimeout(180, TimeUnit.SECONDS)
         .build()
 
-    fun process(ctx: Context, id: String) {
+    fun process(ctx: Context, id: String, manual: Boolean = false) {
         var rec = Repository.get(id) ?: return
         val s = Settings(ctx)
 
@@ -40,7 +40,7 @@ object AiAgent {
         rec = rec.copy(tags = localTags(rec), aiStatus = "working")
         Repository.upsert(rec)
 
-        if (s.groqKey.isBlank()) {
+        if (s.groqKey.isBlank() || (!s.autoTranscribe && !manual)) {
             Repository.upsert(rec.copy(aiStatus = "local"))
             return
         }

@@ -22,7 +22,11 @@ import kotlin.math.sqrt
  * Because we hold the PCM, every frame is also analysed for loudness and voice pitch,
  * which drives the live, per-speaker coloured waveform. Fully on-device, zero cost.
  */
-class AudioEngine(private val file: File) {
+class AudioEngine(
+    private val file: File,
+    private val bitrate: Int = 96_000,
+    private val detectVoices: Boolean = true,
+) {
     @Volatile private var running = false
     @Volatile var paused = false
     @Volatile private var lvl = 0f
@@ -44,7 +48,7 @@ class AudioEngine(private val file: File) {
             if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); false } else {
                 val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, SR, 1).apply {
                     setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-                    setInteger(MediaFormat.KEY_BIT_RATE, 48000)
+                    setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                     setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
                 }
                 val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
@@ -146,7 +150,7 @@ class AudioEngine(private val file: File) {
         val rms = sqrt(sum / n).toFloat()
         val level = (rms * 7f).coerceIn(0f, 1f).pow(0.6f)
         if (level > lvl) lvl = level
-        if (rms > 0.02f) {
+        if (detectVoices && rms > 0.02f) {
             val pitch = Pitch.estimate(b, n, SR)
             if (pitch > 0f) spk = tracker.update(pitch)
         }

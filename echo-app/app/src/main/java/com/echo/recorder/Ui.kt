@@ -511,7 +511,7 @@ fun RecordingCard(r: Recording) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Pill(if (playing == r.id) "Stop" else "Play") { Haptics.click(ctx); runCatching { Player.toggle(r) } }
             if (r.aiStatus == "local" || r.aiStatus.startsWith("error"))
-                Pill("Run AI") { EchoApp.appScope.launchAi(ctx.applicationContext, r.id) }
+                Pill("Run AI") { EchoApp.appScope.launchAi(ctx.applicationContext, r.id, manual = true) }
             Pill("Delete", danger = true) { confirmDelete = true }
         }
     }
@@ -575,6 +575,8 @@ fun AskScreen() {
                         answer = runCatching { withContext(Dispatchers.IO) { AiAgent.ask(key, q, items) } }
                             .getOrElse { "Couldn't reach AI: " + (it.message ?: "error") }
                         busy = false
+                        val st = Settings(ctx)
+                        if (st.speakAnswers) Voice.speak(ctx, answer, st.speechRate)
                     }
                 },
                 shape = RoundedCornerShape(16.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 16.dp),
@@ -587,22 +589,67 @@ fun AskScreen() {
 // ───────────────────────── Settings ─────────────────────────
 
 @Composable
+private fun SectionTitle(t: String, sub: String? = null) {
+    Spacer(Modifier.height(6.dp))
+    Text(t, color = Ink, fontWeight = FontWeight.Bold, fontSize = 18.sp, letterSpacing = (-0.3).sp)
+    if (sub != null) Text(sub, color = TextDim, fontSize = 13.sp)
+}
+
+@Composable
+private fun Choice(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEachIndexed { i, o ->
+            FilterChip(
+                selected = selected == i, onClick = { onSelect(i) }, label = { Text(o) },
+                colors = FilterChipDefaults.filterChipColors(
+                    containerColor = NavPill, labelColor = Ink,
+                    selectedContainerColor = Ink, selectedLabelColor = Cream,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
 fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
     val ctx = LocalContext.current
     val s = remember { Settings(ctx) }
+    val items by Repository.items.collectAsStateWithLifecycle()
     var groq by remember { mutableStateOf(s.groqKey) }
+    var auto by remember { mutableStateOf(s.autoTranscribe) }
+    var quality by remember { mutableIntStateOf(s.quality) }
+    var voices by remember { mutableStateOf(s.detectVoices) }
     var shake by remember { mutableStateOf(s.shakeBookmark) }
+    var shakeLevel by remember { mutableIntStateOf(s.shakeLevel) }
     var hap by remember { mutableStateOf(s.haptics) }
+    var speak by remember { mutableStateOf(s.speakAnswers) }
+    var rate by remember { mutableFloatStateOf(s.speechRate) }
     var msg by remember { mutableStateOf("") }
+    var confirmWipe by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(msg) { if (msg.isNotEmpty()) { kotlinx.coroutines.delay(4000); msg = "" } }
+    val usedMb = remember(items) { items.sumOf { java.io.File(it.path).length() } / 1_048_576.0 }
 
-    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
+    if (confirmWipe) {
+        AlertDialog(
+            onDismissRequest = { confirmWipe = false }, containerColor = CreamCard,
+            icon = { Icon(Icons.Default.DeleteForever, null, tint = RecRed) },
+            title = { Text("Delete everything?") },
+            text = { Text("All ${items.size} recordings, transcripts and summaries are removed from this phone. This can't be undone.") },
+            confirmButton = {
+                Button(onClick = { confirmWipe = false; Player.stop(); items.forEach { Repository.delete(it.id) } },
+                    colors = ButtonDefaults.buttonColors(containerColor = RecRed)) { Text("Delete all") }
+            },
+            dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Cancel", color = Ink) } },
+        )
+    }
+
+    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
         item { PageTitle("Make yourself at home.", "Your voice, your pace, your data.") }
+
+        // ── AI ──
+        item { SectionTitle("AI connection", "Free Groq account: no card, no cost. Get a key at console.groq.com. If you hit the free limit Echo waits and retries; it never switches to a paid plan.") }
         item {
-            Text("AI connection · Groq free account", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-            Text("No card, no cost. Get a key at console.groq.com. If you hit the free limit Echo waits and retries; it never switches to a paid plan.", color = TextDim, fontSize = 13.sp)
-            Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 groq, { groq = it }, label = { Text("Groq API key") }, singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
@@ -615,8 +662,8 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
             )
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = { s.groqKey = groq; msg = "Key saved" },
-                    shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = Violet)) { Text("Save key") }
+                Button(onClick = { s.groqKey = groq; msg = "Key saved" }, shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Violet)) { Text("Save key") }
                 Pill("Test") {
                     s.groqKey = groq; msg = "Testing…"
                     scope.launch {
@@ -627,7 +674,30 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
             }
             if (msg.isNotEmpty()) Text(msg, color = TextDim, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
         }
+        item { SwitchRow("Transcribe automatically", "Turn every new recording into a transcript, summary and action items. Off = tap Run AI yourself.", auto) { auto = it; s.autoTranscribe = it } }
+
+        // ── Recording ──
+        item { SectionTitle("Recording") }
+        item {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(CreamCard)
+                .border(1.dp, Hairline, RoundedCornerShape(16.dp)).padding(14.dp)) {
+                Text("Audio quality", fontWeight = FontWeight.Medium, color = Ink, fontSize = 15.sp)
+                Text("Higher sounds richer but uses more storage and upload data.", color = TextDim, fontSize = 13.sp)
+                Spacer(Modifier.height(8.dp))
+                Choice(listOf("Standard", "High", "Max"), quality) { quality = it; s.quality = it }
+            }
+        }
+        item { SwitchRow("Show who is speaking", "Colour the voice ring per speaker. Turn off to save a little battery.", voices) { voices = it; s.detectVoices = it } }
         item { SwitchRow("Shake to bookmark", "Shake the phone while recording to mark a moment", shake) { shake = it; s.shakeBookmark = it } }
+        if (shake) item {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(CreamCard)
+                .border(1.dp, Hairline, RoundedCornerShape(16.dp)).padding(14.dp)) {
+                Text("Shake strength", fontWeight = FontWeight.Medium, color = Ink, fontSize = 15.sp)
+                Text("Gentle triggers easily; Firm needs a proper shake.", color = TextDim, fontSize = 13.sp)
+                Spacer(Modifier.height(8.dp))
+                Choice(listOf("Gentle", "Normal", "Firm"), shakeLevel) { shakeLevel = it; s.shakeLevel = it }
+            }
+        }
         item { SwitchRow("Haptic feedback", "Tactile confirmation for start, stop and bookmarks", hap) { hap = it; s.haptics = it } }
         item {
             OutlinedButton(
@@ -639,6 +709,48 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
                 modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
             ) { Text("Never let battery saver stop recording", color = Ink) }
         }
+
+        // ── Answers ──
+        item { SectionTitle("Answers", "Voice and pace for spoken answers in Ask. Uses your phone's own free voice.") }
+        item { SwitchRow("Speak answers out loud", "Read each Ask answer aloud automatically", speak) { speak = it; s.speakAnswers = it } }
+        item {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(CreamCard)
+                .border(1.dp, Hairline, RoundedCornerShape(16.dp)).padding(14.dp)) {
+                Text("Speaking pace ${"%.1f".format(rate)}x", fontWeight = FontWeight.Medium, color = Ink, fontSize = 15.sp)
+                Slider(
+                    value = rate, onValueChange = { rate = it }, onValueChangeFinished = { s.speechRate = rate },
+                    valueRange = 0.6f..1.6f,
+                    colors = SliderDefaults.colors(thumbColor = Ink, activeTrackColor = Ink, inactiveTrackColor = NavPill),
+                )
+                Pill("Preview voice") { s.speechRate = rate; Voice.speak(ctx, "Hi, this is how your answers will sound.", rate) }
+            }
+        }
+
+        // ── Data ──
+        item { SectionTitle("Your data", "${items.size} recordings · ${"%.1f".format(usedMb)} MB on this phone") }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Pill("Export transcripts") {
+                    val text = items.joinToString("\n\n———\n\n") { r ->
+                        buildString {
+                            append(r.title).append("\n")
+                            append(SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault()).format(Date(r.createdAt))).append("\n")
+                            r.summary?.let { append("\nSummary: ").append(it) }
+                            if (r.actionItems.isNotEmpty()) append("\nAction items:\n").append(r.actionItems.joinToString("\n") { "- $it" })
+                            r.transcript?.let { append("\n\nTranscript:\n").append(it) }
+                        }
+                    }.ifBlank { "No recordings yet." }
+                    ctx.startActivity(Intent.createChooser(
+                        Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "Export from Echo"))
+                }
+                Pill("Delete all", danger = true) { if (items.isNotEmpty()) confirmWipe = true }
+            }
+            Text("Recordings and memories are stored on this phone. To transcribe, Echo uploads a recording's audio to Groq; to summarise and answer, it sends the transcript and recent summaries. There is no Echo server.",
+                color = TextDim, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+        }
+
+        // ── App ──
+        item { SectionTitle("App") }
         item {
             Button(
                 onClick = {
@@ -652,13 +764,6 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
                 modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Ink),
             ) { Text("Check for updates (build ${BuildConfig.VERSION_CODE})") }
-        }
-        item {
-            Text("Where your data goes", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            Text(
-                "Recordings and memories are stored on this phone. To transcribe, Echo uploads a recording's audio to Groq; to summarise and answer, it sends the transcript and recent summaries. There is no Echo server.",
-                color = TextDim, fontSize = 13.sp,
-            )
         }
     }
 }
