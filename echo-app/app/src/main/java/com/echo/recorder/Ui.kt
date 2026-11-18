@@ -571,7 +571,7 @@ fun RecordingCard(r: Recording) {
         }
         Spacer(Modifier.height(6.dp))
         Text(r.title, color = Ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, fontFamily = Serif, maxLines = if (open) 6 else 2)
-        r.summary?.let { Text(it, color = TextDim, fontSize = 14.sp, maxLines = if (open) 12 else 2, modifier = Modifier.padding(top = 4.dp)) }
+        r.summary?.let { Text(it, color = TextDim, fontSize = 14.sp, maxLines = if (open) Int.MAX_VALUE else 2, modifier = Modifier.padding(top = 4.dp)) }
         if (r.tags.isNotEmpty()) {
             Spacer(Modifier.height(10.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -583,11 +583,11 @@ fun RecordingCard(r: Recording) {
         }
         AnimatedVisibility(open) {
             Column(Modifier.padding(top = 12.dp)) {
-                if (r.actionItems.isNotEmpty()) {
-                    Text("Action items", color = Plum, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    r.actionItems.forEach { Text("☐  $it", color = Ink, fontSize = 14.sp) }
-                    Spacer(Modifier.height(8.dp))
-                }
+                NoteSection("Key points", r.keyPoints, "•")
+                NoteSection("Decisions", r.decisions, "✔")
+                NoteSection("Action items", r.actionItems, "☐")
+                NoteSection("Open questions", r.questions, "?")
+                NoteSection("Highlights", r.highlights, "★")
                 if (r.people.isNotEmpty()) {
                     Text("People", color = Plum, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     r.people.forEach { Text("🗣  $it", color = Ink, fontSize = 14.sp) }
@@ -595,7 +595,7 @@ fun RecordingCard(r: Recording) {
                 }
                 r.transcript?.let {
                     Text("Transcript", color = Plum, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Text(it, color = Ink, fontSize = 14.sp)
+                    androidx.compose.foundation.text.selection.SelectionContainer { Text(it, color = Ink, fontSize = 14.sp, lineHeight = 21.sp) }
                     Text("AI draft · check the audio.", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                     Spacer(Modifier.height(8.dp))
                 }
@@ -613,6 +613,14 @@ fun RecordingCard(r: Recording) {
             Pill("Delete", danger = true) { confirmDelete = true }
         }
     }
+}
+
+@Composable
+private fun NoteSection(title: String, items: List<String>, bullet: String) {
+    if (items.isEmpty()) return
+    Text(title, color = Plum, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    items.forEach { Text("$bullet  $it", color = Ink, fontSize = 14.sp, modifier = Modifier.padding(vertical = 2.dp)) }
+    Spacer(Modifier.height(10.dp))
 }
 
 @Composable
@@ -834,7 +842,9 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
                             append(r.title).append("\n")
                             append(SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault()).format(Date(r.createdAt))).append("\n")
                             r.summary?.let { append("\nSummary: ").append(it) }
-                            if (r.actionItems.isNotEmpty()) append("\nAction items:\n").append(r.actionItems.joinToString("\n") { "- $it" })
+                            if (r.keyPoints.isNotEmpty()) append("\n\nKey points:\n").append(r.keyPoints.joinToString("\n") { "- $it" })
+                            if (r.decisions.isNotEmpty()) append("\n\nDecisions:\n").append(r.decisions.joinToString("\n") { "- $it" })
+                            if (r.actionItems.isNotEmpty()) append("\n\nAction items:\n").append(r.actionItems.joinToString("\n") { "- $it" })
                             r.transcript?.let { append("\n\nTranscript:\n").append(it) }
                         }
                     }.ifBlank { "No recordings yet." }
