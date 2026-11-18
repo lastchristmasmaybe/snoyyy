@@ -38,8 +38,7 @@ class RecorderService : Service(), SensorEventListener {
     private var wakeLock: PowerManager.WakeLock? = null
     private val handler = Handler(Looper.getMainLooper())
 
-    private var accumulatedMs = 0L
-    private var segmentStart = 0L
+    private val clock = RecordingClock()
     private var paused = false
     private var running = false
     private var createdAt = 0L
@@ -86,8 +85,7 @@ class RecorderService : Service(), SensorEventListener {
         file = out
 
         running = true
-        segmentStart = System.currentTimeMillis()
-        accumulatedMs = 0
+        clock.start(System.currentTimeMillis())
         levels.clear(); speakers.clear(); bookmarks.clear()
         levelSum = 0.0; levelCount = 0; peak = 0f; silentCount = 0
 
@@ -120,7 +118,7 @@ class RecorderService : Service(), SensorEventListener {
     private fun pauseRecording() {
         if (!running || paused) return
         engine?.paused = true
-        accumulatedMs += System.currentTimeMillis() - segmentStart
+        clock.pause(System.currentTimeMillis())
         paused = true
         Haptics.click(this)
         publishState(); notifyUpdate()
@@ -129,7 +127,7 @@ class RecorderService : Service(), SensorEventListener {
     private fun resumeRecording() {
         if (!running || !paused) return
         engine?.paused = false
-        segmentStart = System.currentTimeMillis()
+        clock.resume(System.currentTimeMillis())
         paused = false
         Haptics.click(this)
         publishState(); notifyUpdate()
@@ -137,16 +135,18 @@ class RecorderService : Service(), SensorEventListener {
 
     private fun addBookmark() {
         if (!running) return
-        bookmarks.add(elapsed())
+        val at = elapsed()
+        if (bookmarks.isNotEmpty() && at - bookmarks.last() < 2000) return   // no bookmark storms
+        bookmarks.add(at)
         Haptics.doubleClick(this)
         publishState()
     }
 
     private fun stopRecording() {
         if (!running) { stopSelf(); return }
+        val total = clock.stop(System.currentTimeMillis())   // BEFORE flipping `running`
         running = false
         handler.removeCallbacks(tick)
-        val total = elapsed()
         engine?.stop()
         val voices = engine?.voices ?: 0
         engine = null
@@ -192,8 +192,7 @@ class RecorderService : Service(), SensorEventListener {
 
     // ---- sampling & state ------------------------------------------------
 
-    private fun elapsed(): Long =
-        accumulatedMs + if (!paused && running) System.currentTimeMillis() - segmentStart else 0
+    private fun elapsed(): Long = clock.elapsed(System.currentTimeMillis())
 
     private fun sample() {
         val (lvl, sp) = engine?.poll() ?: (0f to -1)
@@ -221,7 +220,7 @@ class RecorderService : Service(), SensorEventListener {
     override fun onSensorChanged(e: SensorEvent) {
         val g = sqrt(e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2]) / 9.81f
         val now = System.currentTimeMillis()
-        if (g > 2.7f && now - lastShake > 2000 && running && !paused) {
+        if (g > 3.2f && now - lastShake > 2500 && running && !paused) {
             lastShake = now
             addBookmark()
         }

@@ -64,7 +64,7 @@ private fun Wordmark(count: Int) {
         Spacer(Modifier.width(8.dp))
         Text("echo", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 32.sp, letterSpacing = (-1).sp, color = Ink)
         Spacer(Modifier.weight(1f))
-        Text("$count memories", color = TextDim, fontSize = 14.sp)
+        Text(if (count == 1) "1 memory" else "$count memories", color = TextDim, fontSize = 14.sp)
     }
 }
 
@@ -146,34 +146,85 @@ fun EchoRoot() {
 
 // ───────────────────────── Record ─────────────────────────
 
+/**
+ * Smart voice ring (inspired by the reference): layered thread-like loops that breathe at rest and
+ * swell with your voice. Each detected speaker gets their own coloured set of loops whose size follows
+ * how loudly *that* voice is speaking, so a conversation visibly braids together.
+ */
 @Composable
-private fun HeroCard() {
-    Box(Modifier.fillMaxWidth().height(190.dp).clip(RoundedCornerShape(28.dp))
-        .background(Brush.verticalGradient(listOf(HeroTop, Hero)))) {
+private fun VoiceRingCard(ui: RecorderState.UiState, active: Boolean) {
+    val recording = ui.status == RecorderState.Status.Recording
+    val t by rememberInfiniteTransition(label = "ring").animateFloat(
+        0f, (2 * Math.PI).toFloat(), infiniteRepeatable(tween(9000, easing = androidx.compose.animation.core.LinearEasing)), label = "phase",
+    )
+    val recent = ui.levels.takeLast(10)
+    val recentSp = ui.speakers.takeLast(10)
+    val overallTarget = if (recording && recent.isNotEmpty()) recent.average().toFloat() else 0f
+    val overall by animateFloatAsState(overallTarget, spring(stiffness = 120f), label = "overall")
+    val e0 by animateFloatAsState(speakerEnergy(recent, recentSp, 0, recording), spring(stiffness = 140f), label = "e0")
+    val e1 by animateFloatAsState(speakerEnergy(recent, recentSp, 1, recording), spring(stiffness = 140f), label = "e1")
+    val e2 by animateFloatAsState(speakerEnergy(recent, recentSp, 2, recording), spring(stiffness = 140f), label = "e2")
+    val energies = floatArrayOf(e0, e1, e2)
+
+    Box(
+        Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(28.dp))
+            .background(Brush.linearGradient(listOf(Color(0xFF1B2A6B), Color(0xFF4B49C8), Color(0xFF7A62F0)))),
+        contentAlignment = Alignment.Center,
+    ) {
         Canvas(Modifier.matchParentSize()) {
-            val w = size.width; val h = size.height
-            // electric-purple glow rising from the bottom
-            drawRect(Brush.radialGradient(
-                listOf(Violet.copy(alpha = 0.75f), Violet.copy(alpha = 0.18f), Color.Transparent),
-                Offset(w * 0.78f, h * 1.05f), w * 0.8f))
-            // fine dot grid
-            val step = 18.dp.toPx()
-            var y = step / 2
-            while (y < h) {
-                var x = step / 2
-                while (x < w) { drawCircle(Color.White.copy(alpha = 0.07f), 1.2f, Offset(x, y)); x += step }
-                y += step
+            val cx = size.width / 2; val cy = size.height / 2
+            val base = size.minDimension * 0.30f
+            val calm = if (active) 0f else (0.035f + 0.015f * kotlin.math.sin(t))   // breathing at rest
+            fun loop(color: Color, lobes: Int, amp: Float, k: Int, speed: Float, alpha: Float) {
+                val path = Path()
+                val steps = 140
+                for (s in 0..steps) {
+                    val th = (s.toFloat() / steps) * (2 * Math.PI).toFloat()
+                    val ph = k * 0.55f
+                    val r = base * (1f + amp * kotlin.math.sin(lobes * th + t * speed + ph) +
+                        amp * 0.45f * kotlin.math.sin((lobes + 3) * th - t * speed * 1.4f + ph * 2f))
+                    val x = cx + r * kotlin.math.cos(th); val y = cy + r * kotlin.math.sin(th)
+                    if (s == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                path.close()
+                drawPath(path, color.copy(alpha = alpha), style = Stroke(width = 1.3.dp.toPx()))
             }
-            // sparkle badge
-            drawCircle(Violet, 14.dp.toPx(), Offset(w - 36.dp.toPx(), 36.dp.toPx()))
-            drawCircle(Color.White, 4.dp.toPx(), Offset(w - 36.dp.toPx(), 36.dp.toPx()))
+            // soft white threads: overall voice energy
+            for (k in 0 until 7) loop(Color.White, 6, calm + 0.04f + overall * 0.20f, k, 1f, 0.55f - k * 0.04f)
+            // coloured braids: one per speaker, sized by that speaker's own energy
+            for (sp in 0 until 3) {
+                val e = energies[sp]
+                if (e > 0.03f) for (k in 0 until 5)
+                    loop(SpeakerColors[sp], 5 + sp * 2, 0.05f + e * 0.34f, k, 1.2f + sp * 0.5f, 0.95f - k * 0.1f)
+            }
         }
-        Column(Modifier.padding(22.dp)) {
-            Text("ROOM FOR YOUR THOUGHTS", color = NavPill.copy(alpha = 0.9f), fontSize = 12.sp, letterSpacing = 2.sp)
-            Spacer(Modifier.height(12.dp))
-            Text("A little less\nto carry.", color = Color.White, fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 36.sp, lineHeight = 38.sp, letterSpacing = (-1.5).sp)
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                if (active) (if (ui.status == RecorderState.Status.Paused) "PAUSED" else "LISTENING") else "MAKE A MEMORY",
+                color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp, letterSpacing = 2.sp,
+            )
+            Text(
+                RecorderService.fmt(ui.elapsedMs),
+                color = Color.White, fontWeight = FontWeight.Bold, fontSize = 44.sp, letterSpacing = (-1).sp,
+            )
+            if (active && ui.voices > 1) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 4.dp)) {
+                    for (k in 0 until ui.voices) Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(9.dp).clip(CircleShape).background(SpeakerColors[k % 3]))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Voice ${k + 1}", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
+                    }
+                }
+            }
         }
     }
+}
+
+private fun speakerEnergy(levels: List<Float>, speakers: List<Int>, who: Int, recording: Boolean): Float {
+    if (!recording || levels.isEmpty()) return 0f
+    var sum = 0f
+    for (i in levels.indices) if (speakers.getOrElse(i) { -1 } == who) sum += levels[i]
+    return sum / levels.size
 }
 
 /** Purple gauge card (reference style): share of memories the AI has fully processed. */
@@ -214,29 +265,10 @@ fun HomeScreen() {
     }
 
     LazyColumn(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-        item { Spacer(Modifier.height(14.dp)); HeroCard(); Spacer(Modifier.height(18.dp)) }
         item {
-            Text(
-                if (active) (if (ui.status == RecorderState.Status.Paused) "PAUSED" else "LISTENING") else "MAKE A MEMORY",
-                color = TextDim, fontSize = 13.sp, letterSpacing = 2.sp,
-            )
-            Text(
-                RecorderService.fmt(ui.elapsedMs),
-                fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 52.sp, letterSpacing = (-1).sp, color = Ink,
-            )
-            Waveform(ui.levels, ui.speakers, active, Modifier.fillMaxWidth().height(if (active) 64.dp else 12.dp))
-            if (active && ui.voices > 0) {
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.padding(top = 6.dp)) {
-                    for (k in 0 until ui.voices) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(10.dp).clip(CircleShape).background(SpeakerColors[k % 3]))
-                            Spacer(Modifier.width(5.dp))
-                            Text("Voice ${k + 1}", color = TextDim, fontSize = 13.sp)
-                        }
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(14.dp))
+            VoiceRingCard(ui, active)
+            Spacer(Modifier.height(14.dp))
         }
         item {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -271,7 +303,7 @@ fun HomeScreen() {
                 ) {
                     Text("Captured", color = TextDim, fontSize = 13.sp)
                     Text("${items.sumOf { it.durationMs } / 60000}", color = Ink, fontSize = 40.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
-                    Text("minutes · ${items.size} memories", color = TextDim, fontSize = 13.sp)
+                    Text("minutes · ${items.size} ${if (items.size == 1) "memory" else "memories"}", color = TextDim, fontSize = 13.sp)
                 }
             }
             Spacer(Modifier.height(18.dp))
@@ -320,7 +352,7 @@ fun SmallRound(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: Stri
     ) { Icon(icon, desc, tint = Ink) }
 }
 
-val SpeakerColors = listOf(Color(0xFF2F7BFF), Color(0xFFFF8A3D), Color(0xFF12B886))
+val SpeakerColors = listOf(Color(0xFF4DA3FF), Color(0xFFFF9A3D), Color(0xFF2EC98A))
 
 @Composable
 fun Waveform(levels: List<Float>, speakers: List<Int>, active: Boolean, modifier: Modifier) {
@@ -472,6 +504,7 @@ fun RecordingCard(r: Recording) {
                 if (r.bookmarks.isNotEmpty())
                     Text("Bookmarks: " + r.bookmarks.joinToString { RecorderService.fmt(it) }, color = TextDim, fontSize = 13.sp)
                 if (r.aiStatus.startsWith("error")) Text(r.aiStatus, color = RecRed, fontSize = 13.sp)
+                if (r.aiStatus == "local") Text("No transcript yet: add your free Groq key in Settings, then tap Run AI.", color = Plum, fontSize = 13.sp)
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -587,7 +620,7 @@ fun SettingsScreen(onUpdate: (UpdateInfo?) -> Unit) {
                 Pill("Test") {
                     s.groqKey = groq; msg = "Testing…"
                     scope.launch {
-                        msg = runCatching { withContext(Dispatchers.IO) { AiAgent.test(groq); "Connected ✓" } }
+                        msg = runCatching { withContext(Dispatchers.IO) { AiAgent.test(groq) } }
                             .getOrElse { "Failed: " + (it.message ?: "error") }
                     }
                 }
